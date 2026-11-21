@@ -1,0 +1,81 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --font-display: var(--font-display-serif), Georgia, serif;
+
+  /* Brand – warm bronze */
+  --color-brand-50: #faf6ef;
+  --color-brand-100: #f3e9d7;
+  --color-brand-200: #e6d0ab;
+  --color-brand-300: #d5b277;
+  --color-brand-400: #c5964f;
+  --color-brand-500: #b07d36;
+  --color-brand-600: #95652c;
+  --color-brand-700: #784e26;
+  --color-brand-800: #5f3f24;
+  --color-brand-900: #4e3420;
+
+  --color-ink: #1c1917;
+  --color-muted: #78716c;
+  --color-line: #e7e5e4;
+  --color-surface: #ffffff;
+  --color-canvas: #f7f5f2;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #d6d3d1 transparent;
+}
+
+/* inputs */
+.input {
+  @apply w-full rounded-lg border border-line bg-white px-3 py-2 text-sm text-ink shadow-xs outline-none transition placeholder:text-stone-400 focus:border-brand-400 focus:ring-3 focus:ring-brand-100 disabled:bg-stone-50 disabled:text-stone-500;
+}
+select.input {
+  @apply pr-8;
+}
+.label {
+  @apply mb-1 block text-xs font-medium text-stone-600;
+}
+.card {
+  @apply rounded-xl border border-line bg-white shadow-xs;
+}
+
+/* print */
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+  body {
+    background: white !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-area {
+    box-shadow: none !important;
+    border: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    max-width: none !important;
+  }
+}
