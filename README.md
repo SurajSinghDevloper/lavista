@@ -16,7 +16,7 @@ cp .env.example .env.local      # then set real secrets (see below)
 npm install
 npm run seed                    # admin user + material catalog + QC checklist templates
 npm run seed:demo               # optional: demo team, leads, a running site, POs, tasks…
-npm run dev                     # http://localhost:3000
+npm run dev                     # http://localhost:4044
 ```
 
 Default admin (from `.env.local`): `ADMIN_EMAIL` / `ADMIN_PASSWORD`.
@@ -25,8 +25,8 @@ Demo team (with `seed:demo`), password `Team@12345`:
 
 | Script | |
 | --- | --- |
-| `npm run dev` | dev server |
-| `npm run build && npm start` | production |
+| `npm run dev` | dev server on port 4044 |
+| `npm run build && npm start` | production (standalone output, port 4044) |
 | `npm run typecheck` / `npm run lint` | checks |
 | `npm run seed` / `npm run seed:demo` | seed data (idempotent) |
 
@@ -38,6 +38,7 @@ Demo team (with `seed:demo`), password `Team@12345`:
 | `JWT_ACCESS_SECRET` | ≥ 32 random chars — `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"` |
 | `ACCESS_TOKEN_TTL_MIN` / `REFRESH_TOKEN_TTL_DAYS` | token lifetimes (15 min / 30 days) |
 | `APP_URL` | public URL (used for CSRF origin checks) |
+| `COOKIE_SECURE` | `true` = login cookies only over HTTPS (default in production); `false` while testing on plain `http://IP:port` |
 | `CORS_ORIGINS` | extra browser origins allowed to call the API (native apps don't need this) |
 | `UPLOAD_DIR`, `MAX_UPLOAD_MB` | file storage (local disk; swap `src/server/storage.ts` for S3/R2 later) |
 | `LEAD_WEBHOOK_KEY` | API key for the website enquiry form |
@@ -98,9 +99,24 @@ scripts/seed.ts       seed data
 docs/API.md           API guide for the mobile app
 ```
 
-## Deployment notes
+## Deployment (Docker + Jenkins)
 
-* Any Node 20.9+ host (VPS, Railway, Render…) or Docker; MongoDB Atlas or self-hosted replica set.
-* Set `NODE_ENV=production`, strong secrets, `APP_URL=https://your-domain`.
-* Uploads are on local disk — use a persistent volume or switch `src/server/storage.ts` to S3/R2 before running multiple instances.
-* Back up MongoDB daily.
+`Jenkinsfile` is the **single place for all secrets and settings** (MongoDB URI, JWT secret, keys, admin login, port). Every deploy it:
+
+1. checks out `master`, runs `npm ci`, type-check and lint
+2. builds the Docker image `lavista:<build-number>` (standalone Next.js on Node 24 Alpine — no secrets inside the image)
+3. optionally seeds the database (tick **RUN_SEED** – creates the admin from `ADMIN_*`, material catalog, QC templates; safe to re-run)
+4. replaces the `lavista` container on port **4044**, passing each setting with `docker run -e NAME`
+5. waits for `/api/v1/health` (fails the build if the app or MongoDB is down) and keeps the last 3 images for rollback
+
+Jenkins needs only the `GitPat` credential (GitHub token) and a NodeJS tool named `NODE_HOME`.
+Uploaded files live in the Docker volume `lavista-uploads` (mounted at `/app/storage/uploads`) and survive redeploys.
+
+Keep the GitHub repository **private** — the Jenkinsfile contains the production secrets.
+
+When a domain + SSL is ready (e.g. nginx in front of port 4044), set in the Jenkinsfile:
+`APP_URL = 'https://your-domain'` and `COOKIE_SECURE = 'true'`.
+
+Rollback: `docker rm -f lavista` then re-run the previous image with the same `docker run` line using `lavista:<older-build>`.
+
+Other notes: back up MongoDB daily; before running several app instances, move uploads to S3/R2 (`src/server/storage.ts`).

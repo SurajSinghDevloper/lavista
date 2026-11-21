@@ -17,7 +17,7 @@ export const env = {
   },
   accessTtlMin: Number(process.env.ACCESS_TOKEN_TTL_MIN || 15),
   refreshTtlDays: Number(process.env.REFRESH_TOKEN_TTL_DAYS || 30),
-  appUrl: process.env.APP_URL || "http://localhost:3000",
+  appUrl: process.env.APP_URL || "http://localhost:4044",
   corsOrigins: (process.env.CORS_ORIGINS || "")
     .split(",")
     .map((s) => s.trim())
@@ -29,4 +29,9 @@ export const env = {
   metaAppSecret: process.env.META_APP_SECRET || "",
   metaPageAccessToken: process.env.META_PAGE_ACCESS_TOKEN || "",
   isProd: process.env.NODE_ENV === "production",
+  /**
+   * Send auth cookies only over HTTPS. Defaults to on in production.
+   * Set COOKIE_SECURE=false only while testing on plain http://IP:port – otherwise browsers drop the login cookie.
+   */
+  cookieSecure: process.env.COOKIE_SECURE ? process.env.COOKIE_SECURE === "true" : process.env.NODE_ENV === "production",
 };

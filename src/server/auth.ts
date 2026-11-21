@@ -199,7 +199,7 @@ export async function revokeByRefreshToken(refreshToken: string) {
 
 /* --------------------------------- Cookies ------------------------------- */
 export function setAuthCookies(res: NextResponse, tokens: { accessToken: string; refreshToken: string }) {
-  const secure = env.isProd;
+  const secure = env.cookieSecure;
   res.cookies.set(COOKIE_ACCESS, tokens.accessToken, {
     httpOnly: true,
     secure,
