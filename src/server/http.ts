@@ -7,6 +7,7 @@ import { can, type Permission } from "@/lib/permissions";
 import { connectDB } from "./db";
 import { env } from "./env";
 import { getAuthUser, type AuthUser } from "./auth";
+import { friendlyCastError, friendlyDuplicate, friendlyMongooseValidation, humanizeKey, isDatabaseDown, summarizeIssues } from "./errors";
 import { memoryRateLimit } from "./rate-limit";
 
 /* --------------------------------- Errors -------------------------------- */
@@ -20,13 +21,14 @@ export class ApiError extends Error {
     super(message);
   }
 }
-export const badRequest = (m = "Bad request", d?: unknown) => new ApiError(400, m, "BAD_REQUEST", d);
-export const unauthorized = (m = "Authentication required") => new ApiError(401, m, "UNAUTHORIZED");
-export const forbidden = (m = "You do not have permission to perform this action") =>
+// Every message below is shown to end users as-is – keep them plain, specific and actionable.
+export const badRequest = (m = "Some details are not valid. Please check and try again.", d?: unknown) => new ApiError(400, m, "BAD_REQUEST", d);
+export const unauthorized = (m = "Please log in to continue.") => new ApiError(401, m, "UNAUTHORIZED");
+export const forbidden = (m = "You don't have permission to do this. Ask your admin if you need access.") =>
   new ApiError(403, m, "FORBIDDEN");
-export const notFound = (m = "Not found") => new ApiError(404, m, "NOT_FOUND");
-export const conflict = (m = "Conflict") => new ApiError(409, m, "CONFLICT");
-export const tooMany = (m = "Too many requests, please try again later") => new ApiError(429, m, "RATE_LIMITED");
+export const notFound = (m = "This item could not be found. It may have been deleted.") => new ApiError(404, m, "NOT_FOUND");
+export const conflict = (m = "This conflicts with an existing record.") => new ApiError(409, m, "CONFLICT");
+export const tooMany = (m = "Too many requests – please wait a moment and try again.") => new ApiError(429, m, "RATE_LIMITED");
 
 /* -------------------------------- Responses ------------------------------ */
 export type Meta = { page?: number; limit?: number; total?: number; pages?: number; [k: string]: unknown };
@@ -42,54 +44,32 @@ export function created(data: unknown) {
   return ok(data, { status: 201 });
 }
 
+function fail(status: number, code: string, message: string, details?: unknown) {
+  return NextResponse.json({ success: false, error: { code, message, ...(details ? { details } : {}) } }, { status });
+}
+
+/** Every error leaves the API as a plain-language message (+ per-field details for forms). */
 function errorResponse(e: unknown) {
-  if (e instanceof ApiError) {
-    return NextResponse.json(
-      { success: false, error: { code: e.code, message: e.message, details: e.details } },
-      { status: e.status }
-    );
-  }
+  if (e instanceof ApiError) return fail(e.status, e.code, e.message, e.details);
   if (e instanceof ZodError) {
-    const details = e.issues.map((i) => ({ path: i.path.join("."), message: i.message }));
-    const first = details[0];
-    return NextResponse.json(
-      {
-        success: false,
-        error: {
-          code: "VALIDATION_ERROR",
-          message: first ? `${first.path ? first.path + ": " : ""}${first.message}` : "Invalid input",
-          details,
-        },
-      },
-      { status: 422 }
-    );
+    const { message, details } = summarizeIssues(e.issues as never);
+    return fail(422, "VALIDATION_ERROR", message, details);
   }
   if (e instanceof mongoose.Error.ValidationError) {
-    const details = Object.values(e.errors).map((er) => ({ path: er.path, message: er.message }));
-    return NextResponse.json(
-      { success: false, error: { code: "VALIDATION_ERROR", message: details[0]?.message ?? "Invalid", details } },
-      { status: 422 }
-    );
+    const { message, details } = friendlyMongooseValidation(e.errors);
+    return fail(422, "VALIDATION_ERROR", message, details);
   }
   if (e instanceof mongoose.Error.CastError) {
-    return NextResponse.json(
-      { success: false, error: { code: "BAD_REQUEST", message: `Invalid value for ${e.path}` } },
-      { status: 400 }
-    );
+    return fail(400, "BAD_REQUEST", friendlyCastError(e.path), [{ path: e.path, message: friendlyCastError(e.path) }]);
   }
   const anyErr = e as { code?: number; keyValue?: Record<string, unknown> };
-  if (anyErr?.code === 11000) {
-    const field = Object.keys(anyErr.keyValue ?? {})[0] ?? "field";
-    return NextResponse.json(
-      { success: false, error: { code: "DUPLICATE", message: `A record with this ${field} already exists` } },
-      { status: 409 }
-    );
+  if (anyErr?.code === 11000) return fail(409, "DUPLICATE", friendlyDuplicate(anyErr.keyValue));
+  if (isDatabaseDown(e)) {
+    console.error("[api] database unreachable", (e as Error).message);
+    return fail(503, "DATABASE_UNAVAILABLE", "The database can't be reached right now. Please try again in a minute.");
   }
   console.error("[api] unhandled error", e);
-  return NextResponse.json(
-    { success: false, error: { code: "SERVER_ERROR", message: "Something went wrong. Please try again." } },
-    { status: 500 }
-  );
+  return fail(500, "SERVER_ERROR", "Something went wrong on our side. Please try again – if it keeps happening, tell your admin.");
 }
 
 /* ------------------------------ Input helpers ---------------------------- */
@@ -109,13 +89,13 @@ export function stripDollarKeys<T>(input: T): T {
 
 export async function readJson(req: NextRequest): Promise<unknown> {
   const len = Number(req.headers.get("content-length") || 0);
-  if (len > 2 * 1024 * 1024) throw new ApiError(413, "Request body too large", "PAYLOAD_TOO_LARGE");
+  if (len > 2 * 1024 * 1024) throw new ApiError(413, "Too much data was sent at once. Please try again with fewer items.", "PAYLOAD_TOO_LARGE");
   try {
     const text = await req.text();
     if (!text) return {};
     return stripDollarKeys(JSON.parse(text));
   } catch {
-    throw badRequest("Invalid JSON body");
+    throw badRequest("The request could not be read. Please refresh the page and try again.");
   }
 }
 
@@ -128,8 +108,10 @@ export function isObjectId(v: unknown): v is string {
 }
 
 export function assertId(id: string | undefined, name = "id"): string {
-  if (!isObjectId(id)) throw badRequest(`Invalid ${name}`);
-  return id;
+  if (isObjectId(id)) return id;
+  // a malformed record id in the URL just means "this record doesn't exist"
+  if (name === "id") throw notFound("This record could not be found. The link may be wrong or the record was deleted.");
+  throw badRequest(`Please select a valid ${humanizeKey(name).toLowerCase()}`);
 }
 
 export function clientIp(req: NextRequest) {
@@ -173,6 +155,9 @@ function requestHosts(req: NextRequest) {
   return hosts;
 }
 
+// Technical details (blocked address, hosts) go to the server log; users get a plain instruction.
+const CSRF_MESSAGE = "This action was blocked for security reasons. Please reload the page from the app's usual address and try again.";
+
 function checkCsrf(req: NextRequest, viaCookie: boolean) {
   if (!viaCookie) return; // Bearer tokens (mobile) are not subject to CSRF
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return;
@@ -183,11 +168,14 @@ function checkCsrf(req: NextRequest, viaCookie: boolean) {
   } catch {
     origin = null;
   }
-  if (!origin) throw forbidden("Cross-site request blocked (no Origin header)");
+  if (!origin) {
+    console.warn(`[csrf] blocked ${req.method} ${req.nextUrl.pathname}: no Origin/Referer header`);
+    throw new ApiError(403, CSRF_MESSAGE, "CSRF_BLOCKED");
+  }
   // 1) configured addresses (APP_URL, CORS_ORIGINS)  2) same host the page was loaded from (http or https)
   if (allowedOrigins(req).has(origin.origin) || requestHosts(req).has(origin.host.toLowerCase())) return;
-  console.warn(`[csrf] blocked ${req.method} ${req.nextUrl.pathname} from ${origin.origin}; request hosts: ${[...requestHosts(req)].join(", ")}`);
-  throw forbidden(`Cross-site request blocked: ${origin.origin} is not an allowed address (set APP_URL to the address users open)`);
+  console.warn(`[csrf] blocked ${req.method} ${req.nextUrl.pathname} from ${origin.origin}; request hosts: ${[...requestHosts(req)].join(", ")} – set APP_URL to the address users open`);
+  throw new ApiError(403, CSRF_MESSAGE, "CSRF_BLOCKED");
 }
 
 /* ------------------------------ Route wrapper ---------------------------- */

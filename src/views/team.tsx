@@ -7,7 +7,7 @@ import { useAuth } from "@/components/auth";
 import { DataTable, ResourcePage } from "@/components/data-table";
 import { REF } from "@/components/domain";
 import { FormDrawer } from "@/components/form";
-import { Avatar, Badge, Button, Card, Empty, IconButton, KV, Loading, Menu, MenuItem, Modal, PageHeader, StatusBadge, Tabs, useConfirm, useToast } from "@/components/ui";
+import { Avatar, Badge, Button, Card, Empty, IconButton, KV, LoadError, Loading, Menu, MenuItem, Modal, PageHeader, StatusBadge, Tabs, useConfirm, useToast } from "@/components/ui";
 import { invalidate, useList, useOne } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { ATTENDANCE_STATUS, DEPARTMENTS, ROLES, labelOf } from "@/lib/constants";
@@ -334,7 +334,7 @@ export function ProfilePage() {
 export function SettingsPage() {
   const { can } = useAuth();
   const toast = useToast();
-  const { data, mutate, isLoading } = useOne<any>("/settings");
+  const { data, mutate, isLoading, error } = useOne<any>("/settings");
   const [tab, setTab] = useState<"company" | "documents" | "schedule" | "integrations">("company");
   const [company, setCompany] = useState<any>({});
   const [terms, setTerms] = useState<any>({});
@@ -347,6 +347,7 @@ export function SettingsPage() {
     setSchedule(data.paymentSchedule ?? []);
   }, [data]);
   if (isLoading) return <Loading />;
+  if (error && !data) return <LoadError error={error} onRetry={() => mutate()} />;
   const put = async (key: string, value: unknown) => {
     try {
       await api.put(`/settings/${key}`, { value });

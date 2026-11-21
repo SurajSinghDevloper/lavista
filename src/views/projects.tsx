@@ -9,7 +9,7 @@ import { useAuth } from "@/components/auth";
 import { DataTable, FilterBar, Pagination, SearchBox } from "@/components/data-table";
 import { ActivityFeed, FileLibrary, Person, REF, StageStepper } from "@/components/domain";
 import { FormDrawer } from "@/components/form";
-import { Badge, Button, Card, Empty, KV, Loading, Modal, PageHeader, Progress, Segmented, StatusBadge, Tabs, cx, useConfirm, useToast } from "@/components/ui";
+import { Badge, Button, Card, Empty, KV, LoadError, Loading, Modal, PageHeader, Progress, Segmented, StatusBadge, Tabs, cx, useConfirm, useToast } from "@/components/ui";
 import { invalidate, useList, useOne } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { PROJECT_STAGES, PROJECT_STATUS, PROPERTY_CONFIGS, PROPERTY_TYPES, WORK_SCOPES, labelOf } from "@/lib/constants";
@@ -32,7 +32,7 @@ export function ProjectsPage() {
   const [page, setPage] = useState(1);
   const [filters, setFilters] = useState<Record<string, any>>({ status: "active" });
   const [creating, setCreating] = useState(false);
-  const { rows, meta, loading, mutate } = useList("/projects", { q, page, limit: view === "cards" ? 24 : 20, ...filters, sort: "-updatedAt" });
+  const { rows, meta, loading, mutate, error } = useList("/projects", { q, page, limit: view === "cards" ? 24 : 20, ...filters, sort: "-updatedAt" });
   return (
     <div>
       <PageHeader
@@ -61,6 +61,8 @@ export function ProjectsPage() {
       {view === "cards" ? (
         loading && !rows.length ? (
           <Loading />
+        ) : error && !rows.length ? (
+          <LoadError error={error} onRetry={() => mutate()} />
         ) : rows.length === 0 ? (
           <Empty icon={<Building2 className="size-5" />} title="No sites" hint="Convert a lead to create a site, or add one directly." />
         ) : (
@@ -169,7 +171,7 @@ export function ProjectDetail({ params }: { params: Promise<{ id: string }> }) {
   const toast = useToast();
   const confirm = useConfirm();
   const { can } = useAuth();
-  const { data: p, mutate, isLoading } = useOne<any>(`/projects/${id}`);
+  const { data: p, mutate, isLoading, error } = useOne<any>(`/projects/${id}`);
   const { data: summary, mutate: reloadSummary } = useOne<any>(`/projects/${id}/summary`);
   const [tab, setTab] = useState<Tab>("overview");
   const [edit, setEdit] = useState(false);
@@ -186,7 +188,7 @@ export function ProjectDetail({ params }: { params: Promise<{ id: string }> }) {
   };
 
   if (isLoading) return <Loading />;
-  if (!p) return <Empty title="Site not found or you are not assigned to it" />;
+  if (!p) return error ? <LoadError error={error} onRetry={() => mutate()} /> : <Empty title="Site not found" />;
 
   const moveStage = async () => {
     try {

@@ -6,7 +6,7 @@ import { Session } from "@/server/models";
 export const DELETE = api({}, async ({ user, params }) => {
   const id = assertId(params.id);
   const s = await Session.findOne({ _id: id, user: user.id });
-  if (!s) throw notFound("Session not found");
+  if (!s) throw notFound("That device is already logged out.");
   await revokeSession(id, "revoked_by_user");
   return { id };
 });

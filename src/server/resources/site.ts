@@ -82,7 +82,7 @@ export const toggleChecklistItem = api({ perm: "checklists:write" }, async ({ re
   if (!c) throw notFound("Checklist not found");
   if (c.project) await assertProjectAccess(user, c.project);
   const it = c.items.id(itemId);
-  if (!it) throw notFound("Item not found");
+  if (!it) throw notFound("This checklist item could not be found. It may have been removed – please refresh.");
   it.checked = body.checked;
   it.checkedBy = body.checked ? user.id : undefined;
   it.checkedAt = body.checked ? new Date() : undefined;
@@ -118,7 +118,7 @@ export const addChecklistItem = api({ perm: "checklists:write" }, async ({ req, 
 export const removeChecklistItem = api({ perm: "checklists:write" }, async ({ params, user }) => {
   const c = await loadChecklist(user, assertId(params.id));
   const it = c.items.id(assertId(params.itemId, "item"));
-  if (!it) throw notFound("Item not found");
+  if (!it) throw notFound("This checklist item could not be found. It may have been removed – please refresh.");
   it.deleteOne();
   await saveChecklist(c);
   return serialize(c.toJSON());

@@ -4,6 +4,7 @@ import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { api } from "@/lib/api-client";
+import { userMessage } from "@/components/ui";
 
 export function LoginForm() {
   const sp = useSearchParams();
@@ -23,7 +24,7 @@ export function LoginForm() {
       // only allow same-site relative redirects
       window.location.href = next && next.startsWith("/") && !next.startsWith("//") ? next : "/dashboard";
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
+      setError(userMessage(err));
       setLoading(false);
     }
   };

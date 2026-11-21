@@ -2,7 +2,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Check, ChevronDown, Search, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api, ApiClientError, qs } from "@/lib/api-client";
 import type { Option } from "@/lib/constants";
 import { toInputDate, toInputDateTime } from "@/lib/format";
@@ -349,7 +349,7 @@ export function toPayload(fields: Field[], values: Record<string, any>) {
   return out;
 }
 
-export function useFormState(initial: Record<string, any>) {
+export function useFormState(initial: Record<string, any> | (() => Record<string, any>)) {
   const [values, setValues] = useState(initial);
   const [errors, setErrors] = useState<Record<string, string>>({});
   return {
@@ -362,6 +362,15 @@ export function useFormState(initial: Record<string, any>) {
       setErrors((e) => (e[k] ? { ...e, [k]: "" } : e));
     },
   };
+}
+
+/** Empty for a required-field check (text, number, date, select, ref, multi-select). */
+export function isBlank(v: unknown) {
+  if (v === undefined || v === null) return true;
+  if (typeof v === "string") return v.trim() === "";
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === "object") return !(v as { id?: string }).id;
+  return false;
 }
 
 export function errorsFrom(e: unknown): Record<string, string> {
@@ -400,20 +409,28 @@ export function FormDrawer({
   extra?: ReactNode;
 }) {
   const toast = useToast();
-  const initial = useMemo(() => toFormValues(fields, record, defaults), [fields, record, defaults]);
-  const form = useFormState(initial);
+  const form = useFormState(() => toFormValues(fields, record, defaults));
   const [saving, setSaving] = useState(false);
 
+  // Fill the form when it opens or a different record is loaded – never on a background re-render,
+  // otherwise whatever the person typed would be wiped (e.g. when an error message appears).
   useEffect(() => {
     if (open) {
-      form.setValues(initial);
+      form.setValues(toFormValues(fields, record, defaults));
       form.setErrors({});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, initial]);
+  }, [open, record?.id]);
 
   const submit = async (e?: React.FormEvent) => {
     e?.preventDefault();
+    // check required fields here so people get "Client is required" next to the field, not a server error
+    const missing = fields.filter((f) => f.required && f.type !== "section" && !f.hidden?.(form.values) && isBlank(form.values[f.name]));
+    if (missing.length) {
+      form.setErrors(Object.fromEntries(missing.map((f) => [f.name, `${f.label} is required`])));
+      toast.error(missing.length === 1 ? `${missing[0].label} is required` : `Please fill in the required fields: ${missing.map((f) => f.label).join(", ")}`);
+      return;
+    }
     setSaving(true);
     try {
       let payload = toPayload(fields, form.values);

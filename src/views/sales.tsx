@@ -9,7 +9,7 @@ import { useAuth } from "@/components/auth";
 import { DataTable, ExportButton, FilterBar, Pagination, ResourcePage, SearchBox, exportCsv } from "@/components/data-table";
 import { ActivityFeed, Attachments, FileLibrary, Person, ProjectLink, REF } from "@/components/domain";
 import { EntitySelect, FormDrawer, FormGrid, errorsFrom, toPayload, useFormState, type Field } from "@/components/form";
-import { Badge, Button, Card, Drawer, Empty, KV, Loading, Modal, PageHeader, Segmented, StatusBadge, Tabs, cx, useConfirm, useToast } from "@/components/ui";
+import { Badge, Button, Card, Drawer, Empty, KV, LoadError, Loading, Modal, PageHeader, Segmented, StatusBadge, Tabs, cx, useConfirm, useToast } from "@/components/ui";
 import { invalidate, useList, useOne } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import {
@@ -110,7 +110,7 @@ export function LeadsPage() {
     if (sp.get("status")) setFilters({ status: sp.get("status") });
   }, []);
   const params = { q, page, ...filters };
-  const { rows, meta, loading, mutate } = useList("/leads", params);
+  const { rows, meta, loading, mutate, error } = useList("/leads", params);
   const filterDefs = [
     { name: "status", label: "Status", options: LEAD_STATUS },
     { name: "source", label: "Source", options: LEAD_SOURCES },
@@ -165,7 +165,7 @@ export function LeadsPage() {
         <LeadBoard params={{ q, ...filters, status: undefined }} />
       ) : (
         <div className="card">
-          <DataTable columns={leadColumns} rows={rows} loading={loading} onRowClick={(r) => router.push(`/leads/${r.id}`)} empty={<Empty title="No leads found" />} />
+          <DataTable columns={leadColumns} rows={rows} loading={loading} error={error} onRetry={() => mutate()} onRowClick={(r) => router.push(`/leads/${r.id}`)} empty={<Empty title="No leads found" />} />
           {meta && <Pagination page={meta.page} pages={meta.pages} total={meta.total} onPage={setPage} />}
         </div>
       )}
@@ -547,7 +547,7 @@ export function LeadDetail({ params }: { params: Promise<{ id: string }> }) {
   const toast = useToast();
   const confirm = useConfirm();
   const { can } = useAuth();
-  const { data: lead, mutate, isLoading } = useOne<any>(`/leads/${id}`);
+  const { data: lead, mutate, isLoading, error } = useOne<any>(`/leads/${id}`);
   const [tab, setTab] = useState<"followups" | "visits" | "quotes" | "files" | "activity">("followups");
   const [edit, setEdit] = useState(false);
   const [convert, setConvert] = useState(false);
@@ -555,7 +555,7 @@ export function LeadDetail({ params }: { params: Promise<{ id: string }> }) {
   const [lostReason, setLostReason] = useState("");
   const { rows: quotes } = useList(`/quotations`, { lead: id, limit: 50 });
   if (isLoading) return <Loading />;
-  if (!lead) return <Empty title="Lead not found" />;
+  if (!lead) return error ? <LoadError error={error} onRetry={() => mutate()} /> : <Empty title="Lead not found" />;
 
   const setStatus = async (status: string, extra: any = {}) => {
     try {
@@ -816,13 +816,13 @@ export function ClientsPage() {
 export function ClientDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { can } = useAuth();
-  const { data: c, mutate, isLoading } = useOne<any>(`/clients/${id}`);
+  const { data: c, mutate, isLoading, error } = useOne<any>(`/clients/${id}`);
   const { rows: sites } = useList("/projects", { client: id, limit: 50 });
   const { rows: pays } = useList(can("payments:read") ? "/payments" : null, { client: id, limit: 50 });
   const [edit, setEdit] = useState(false);
   const router = useRouter();
   if (isLoading) return <Loading />;
-  if (!c) return <Empty title="Client not found" />;
+  if (!c) return error ? <LoadError error={error} onRetry={() => mutate()} /> : <Empty title="Client not found" />;
   return (
     <div className="space-y-5">
       <PageHeader

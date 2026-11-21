@@ -9,7 +9,7 @@ import { useAuth } from "@/components/auth";
 import { DataTable, ResourcePage } from "@/components/data-table";
 import { LineItemsEditor, ProjectLink, REF, Totals, emptyItem, useCompany, type LineItem } from "@/components/domain";
 import { EntitySelect, FormDrawer } from "@/components/form";
-import { Button, Card, Empty, KV, Loading, MenuItem, PageHeader, Progress, Segmented, StatCard, StatusBadge, Tabs, cx, useConfirm, useToast } from "@/components/ui";
+import { Button, Card, Empty, KV, LoadError, Loading, MenuItem, PageHeader, Progress, Segmented, StatCard, StatusBadge, Tabs, cx, useConfirm, useToast } from "@/components/ui";
 import { invalidate, useList, useOne } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { EXPENSE_CATEGORIES, INVOICE_STATUS, INVOICE_TYPES, MILESTONE_STATUS, PAYMENT_MODES, PROJECT_STAGES, RECEIPT_TYPES } from "@/lib/constants";
@@ -19,10 +19,10 @@ import { expenseColumns, expenseFields, paymentColumns, paymentFields } from "./
 /* --------------------------- Site-wise accounts -------------------------- */
 export function AccountsPage() {
   const router = useRouter();
-  const { data, isLoading } = useOne<any>("/accounts/summary");
+  const { data, isLoading, error, mutate } = useOne<any>("/accounts/summary");
   const [view, setView] = useState<"cards" | "table">("cards");
   const [status, setStatus] = useState("active");
-  if (isLoading || !data) return <Loading />;
+  if (!data) return error && !isLoading ? <LoadError error={error} onRetry={() => mutate()} /> : <Loading />;
   const sites = data.sites.filter((s: any) => !status || s.status === status);
   const t = data.totals;
   return (
@@ -349,9 +349,9 @@ export function NewInvoice() {
 
 export function InvoiceDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { data, isLoading } = useOne<any>(`/invoices/${id}`);
+  const { data, isLoading, error, mutate } = useOne<any>(`/invoices/${id}`);
   if (isLoading) return <Loading />;
-  if (!data) return <Empty title="Bill not found" />;
+  if (!data) return error ? <LoadError error={error} onRetry={() => mutate()} /> : <Empty title="Bill not found" />;
   return <InvoiceEditor key={data.updatedAt} initial={{ ...data, date: toInputDate(data.date), dueDate: toInputDate(data.dueDate) }} />;
 }
 

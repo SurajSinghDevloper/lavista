@@ -9,7 +9,7 @@ import { useAuth } from "@/components/auth";
 import { DataTable, Pagination, ResourcePage } from "@/components/data-table";
 import { Attachments, FileGrid, LineItemsEditor, ProjectLink, REF, Totals, emptyItem, type LineItem } from "@/components/domain";
 import { EntitySelect } from "@/components/form";
-import { Badge, Button, Card, Drawer, Empty, KV, Loading, Modal, PageHeader, Segmented, StatusBadge, Tabs, cx, useConfirm, useToast } from "@/components/ui";
+import { Badge, Button, Card, Drawer, Empty, KV, LoadError, Loading, Modal, PageHeader, Segmented, StatusBadge, Tabs, cx, useConfirm, useToast } from "@/components/ui";
 import { invalidate, useList, useOne } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { DELIVERY_LOCATIONS, MATERIAL_CATEGORIES, MR_STATUS, PAYMENT_STATUS, PO_STATUS, STOCK_TXN_TYPES, TRADES, UNITS, labelOf } from "@/lib/constants";
@@ -467,13 +467,13 @@ export function PurchaseOrderDetail({ params }: { params: Promise<{ id: string }
   const toast = useToast();
   const confirm = useConfirm();
   const { can } = useAuth();
-  const { data: po, mutate, isLoading } = useOne<any>(`/purchase-orders/${id}`);
+  const { data: po, mutate, isLoading, error } = useOne<any>(`/purchase-orders/${id}`);
   const { rows: grns, mutate: reloadGrn } = useList("/grn", { purchaseOrder: id, limit: 50 });
   const { rows: pays } = useList(can("expenses:read") ? "/expenses" : null, { purchaseOrder: id, limit: 50 });
   const [receive, setReceive] = useState(false);
   const [edit, setEdit] = useState(false);
   if (isLoading) return <Loading />;
-  if (!po) return <Empty title="PO not found" />;
+  if (!po) return error ? <LoadError error={error} onRetry={() => mutate()} /> : <Empty title="Purchase order not found" />;
   if (edit) return <POEditor initial={{ ...po, date: toInputDate(po.date), expectedDate: toInputDate(po.expectedDate) }} />;
   const status = async (s: string) => {
     if (s === "cancelled" && !(await confirm({ title: "Cancel this PO?", danger: true, confirmText: "Cancel PO" }))) return;

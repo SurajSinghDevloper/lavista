@@ -29,32 +29,32 @@ export const uploadFile = api({ perm: "files:write", rate: { limit: 120, windowS
   try {
     form = await req.formData();
   } catch {
-    throw badRequest("Expected multipart/form-data");
+    throw badRequest("Please choose a file to upload.");
   }
   const files = form.getAll("file").filter((f): f is File => typeof f !== "string");
-  if (!files.length) throw badRequest("No file uploaded (field name: file)");
-  if (files.length > 20) throw badRequest("Max 20 files per upload");
+  if (!files.length) throw badRequest("Please choose a file to upload.");
+  if (files.length > 20) throw badRequest("You can upload up to 20 files at a time.");
 
   const category = String(form.get("category") || "other");
-  if (!values(FILE_CATEGORIES).includes(category as never)) throw badRequest("Invalid category");
+  if (!values(FILE_CATEGORIES).includes(category as never)) throw badRequest("Please choose a valid file category.");
   const project = form.get("project") ? String(form.get("project")) : null;
   if (project) {
-    if (!isObjectId(project)) throw badRequest("Invalid project");
+    if (!isObjectId(project)) throw badRequest("The selected site is not valid. Please refresh the page and try again.");
     await assertProjectAccess(user, project);
   }
   const entityType = form.get("entityType") ? String(form.get("entityType")).slice(0, 40) : undefined;
   const entityId = form.get("entityId") ? String(form.get("entityId")) : undefined;
-  if (entityId && !isObjectId(entityId)) throw badRequest("Invalid entityId");
+  if (entityId && !isObjectId(entityId)) throw badRequest("The file could not be attached. Please refresh the page and try again.");
   const caption = form.get("caption") ? String(form.get("caption")).slice(0, 300) : undefined;
 
   const saved = [];
   for (const f of files) {
     const ext = extensionOf(f.name);
     const mime = ALLOWED_TYPES[ext];
-    if (!mime) throw badRequest(`File type .${ext || "?"} is not allowed`);
-    if (f.size > env.maxUploadBytes) throw new ApiError(413, `${f.name} exceeds ${env.maxUploadBytes / 1048576} MB`, "PAYLOAD_TOO_LARGE");
+    if (!mime) throw badRequest(`“${f.name}” can't be uploaded – ${ext ? `.${ext} files are` : "files without an extension are"} not allowed. You can upload photos (JPG, PNG, WebP, HEIC), PDF, AutoCAD (DWG/DXF), SketchUp (SKP), Excel, Word, PowerPoint, ZIP/RAR, MP4/MOV video and text files.`);
+    if (f.size > env.maxUploadBytes) throw new ApiError(413, `“${f.name}” is larger than ${env.maxUploadBytes / 1048576} MB. Please upload a smaller file (or compress the photo / PDF).`, "PAYLOAD_TOO_LARGE");
     const bytes = new Uint8Array(await f.arrayBuffer());
-    if (!sniffOk(ext, bytes.subarray(0, 64))) throw badRequest(`${f.name} content does not match its extension`);
+    if (!sniffOk(ext, bytes.subarray(0, 64))) throw badRequest(`“${f.name}” looks damaged or is not really a .${ext} file. Please check the file and try again.`);
     const storageKey = await saveFile(bytes, ext);
     const thumbKey = THUMBNAIL_EXT.has(ext) ? await createThumbnail(bytes) : null;
     const doc = await FileModel.create({
@@ -129,7 +129,7 @@ export const downloadFile = api({ perm: "files:read", rate: { limit: 3000, windo
     }
   }
   const { stream, size } = await fileStream(key).catch(() => {
-    throw notFound("File missing from storage");
+    throw notFound("This file is no longer available on the server. Please upload it again.");
   });
   const inline = sp.get("download") !== "1" && INLINE_TYPES.has(mime);
   const name = encodeURIComponent(f.originalName);
@@ -217,7 +217,7 @@ const settingSchemas: Record<string, z.ZodType> = {
 
 export const putSetting = api({ perm: "settings:write" }, async ({ req, params, user, ip }) => {
   const key = params.key;
-  if (!SETTING_KEYS.includes(key)) throw notFound("Unknown setting");
+  if (!SETTING_KEYS.includes(key)) throw notFound("This setting does not exist.");
   const { value } = await parseBody(req, z.object({ value: settingSchemas[key] }));
   await setSetting(key, value, user.id);
   await audit(user, "update", "Setting", null, `Updated setting ${key}`, { ip });

@@ -9,7 +9,7 @@ import { useAuth } from "@/components/auth";
 import { ResourcePage } from "@/components/data-table";
 import { LineItemsEditor, ProjectLink, REF, Totals, emptyItem, type LineItem } from "@/components/domain";
 import { EntitySelect } from "@/components/form";
-import { Badge, Button, Card, Empty, Loading, Modal, PageHeader, StatusBadge, cx, useConfirm, useToast } from "@/components/ui";
+import { Badge, Button, Card, Empty, LoadError, Loading, Modal, PageHeader, StatusBadge, cx, useConfirm, useToast } from "@/components/ui";
 import { invalidate, useList, useOne } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { QUOTE_STATUS, QUOTE_TYPES, labelOf } from "@/lib/constants";
@@ -424,8 +424,8 @@ export function NewQuotation() {
 
 export function QuotationDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { data, isLoading } = useOne<any>(`/quotations/${id}`);
+  const { data, isLoading, error, mutate } = useOne<any>(`/quotations/${id}`);
   if (isLoading) return <Loading />;
-  if (!data) return <Empty title="Quotation not found" />;
+  if (!data) return error ? <LoadError error={error} onRetry={() => mutate()} /> : <Empty title="Quotation not found" />;
   return <Editor key={data.id + data.updatedAt} initial={{ ...data, date: toInputDate(data.date), validUntil: toInputDate(data.validUntil) }} />;
 }

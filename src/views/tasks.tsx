@@ -7,7 +7,7 @@ import { useAuth } from "@/components/auth";
 import { DataTable, FilterBar, Pagination, SearchBox } from "@/components/data-table";
 import { Attachments, Person, ProjectLink, REF } from "@/components/domain";
 import { EntitySelect, FormGrid, errorsFrom, toFormValues, toPayload, useFormState, type Field } from "@/components/form";
-import { Avatar, Button, Card, Drawer, Empty, Loading, PageHeader, Segmented, StatusBadge, cx, useConfirm, useToast } from "@/components/ui";
+import { Avatar, Button, Card, Drawer, Empty, LoadError, Loading, PageHeader, Segmented, StatusBadge, cx, useConfirm, useToast } from "@/components/ui";
 import { invalidate, useList, useOne } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { RECURRENCE, ROLES, TASK_CATEGORIES, TASK_PRIORITY, TASK_STATUS, labelOf } from "@/lib/constants";
@@ -270,8 +270,9 @@ function Board({ params, onOpen }: { params: any; onOpen: (id: string) => void }
 }
 
 function Workload({ onPick }: { onPick: (userId: string) => void }) {
-  const { data, isLoading } = useOne<any[]>("/tasks/workload");
+  const { data, isLoading, error, mutate } = useOne<any[]>("/tasks/workload");
   if (isLoading) return <Loading />;
+  if (error && !data) return <LoadError error={error} onRetry={() => mutate()} />;
   if (!data?.length) return <Empty title="No assigned tasks" />;
   return (
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -375,7 +376,7 @@ export function TasksView({ project, embedded }: { project?: string; embedded?: 
   const params = { q, page, project, ...scope, ...filters, ...dueParams };
   const listing = ["mine", "assigned", "team"].includes(view);
   // wait for the user id so "My tasks" never briefly lists everyone's tasks
-  const { rows, meta, loading, mutate } = useList(listing && user ? "/tasks" : null, params);
+  const { rows, meta, loading, mutate, error } = useList(listing && user ? "/tasks" : null, params);
 
   const views = [
     ...(project ? [] : [{ value: "mine" as View, label: "My tasks" }, { value: "assigned" as View, label: "Assigned by me" }]),
@@ -424,7 +425,7 @@ export function TasksView({ project, embedded }: { project?: string; embedded?: 
               onChange={(k, v) => (setFilters((f) => ({ ...f, [k]: v })), setPage(1))}
             />
           </div>
-          <DataTable columns={project ? columns.filter((c) => c.key !== "project") : columns} rows={rows} loading={loading} onRowClick={(r) => setOpenId(r.id)} empty={<Empty icon={<CalendarDays className="size-5" />} title="No tasks here" />} />
+          <DataTable columns={project ? columns.filter((c) => c.key !== "project") : columns} rows={rows} loading={loading} error={error} onRetry={() => mutate()} onRowClick={(r) => setOpenId(r.id)} empty={<Empty icon={<CalendarDays className="size-5" />} title="No tasks here" />} />
           {meta && <Pagination page={meta.page} pages={meta.pages} total={meta.total} onPage={setPage} />}
         </div>
       )}

@@ -222,7 +222,7 @@ export const returnStock = api({ perm: "inventory:write" }, async ({ req, user, 
 export const adjustStock = api({ perm: "inventory:approve" }, async ({ req, user, ip }) => {
   const body = await parseBody(
     req,
-    z.object({ material: zId, qty: z.coerce.number().refine((n) => n !== 0, "Qty cannot be 0"), rate: zMoney, notes: zStr(500) })
+    z.object({ material: zId, qty: z.coerce.number().refine((n) => n !== 0, "Quantity cannot be 0 – enter a positive number to add stock or a negative number to remove it"), rate: zMoney, notes: zStr(500) })
   );
   if (body.qty > 0) await stockIn(body.material, body.qty, body.rate ?? 0, { refType: "adjust", notes: body.notes, userId: user.id }, "adjust");
   else await stockOut(body.material, -body.qty, { refType: "adjust", notes: body.notes, userId: user.id }, "adjust");
@@ -292,9 +292,9 @@ export const decideMaterialRequest = api({ perm: "material_requests:approve" }, 
   const id = assertId(params.id);
   const body = await parseBody(req, z.object({ action: z.enum(["approve", "reject"]), reason: zText(500) }));
   const mr = await MaterialRequest.findById(id);
-  if (!mr) throw notFound("Request not found");
+  if (!mr) throw notFound("This material request could not be found. It may have been deleted.");
   await assertProjectAccess(user, mr.project);
-  if (mr.status !== "pending") throw badRequest("Request already processed");
+  if (mr.status !== "pending") throw badRequest("This request has already been approved or rejected.");
   mr.status = body.action === "approve" ? "approved" : "rejected";
   mr.approvedBy = user.id;
   mr.approvedAt = new Date();
@@ -392,7 +392,7 @@ export const poStatus = api({ perm: "purchase_orders:write" }, async ({ req, par
   const { status } = await parseBody(req, z.object({ status: z.enum(values(PO_STATUS)) }));
   const po = await PurchaseOrder.findById(id);
   if (!po) throw notFound("PO not found");
-  if (!["ordered", "cancelled", "draft"].includes(status)) throw badRequest("Received status is set automatically by GRN");
+  if (!["ordered", "cancelled", "draft"].includes(status)) throw badRequest("“Received” is set automatically when goods are received against this PO (GRN).");
   if (status === "cancelled" && (await GRN.exists({ purchaseOrder: po._id }))) throw badRequest("PO has GRNs and cannot be cancelled");
   po.status = status;
   await po.save();

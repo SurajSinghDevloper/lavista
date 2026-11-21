@@ -229,7 +229,7 @@ export async function recomputeContractValue(projectId: unknown) {
 }
 
 const statusBody = z.object({
-  status: z.enum(values(QUOTE_STATUS)).refine((s) => s !== "superseded", "Invalid status"),
+  status: z.enum(values(QUOTE_STATUS)).refine((s) => s !== "superseded", "“Superseded” is set automatically when a newer version is created"),
   clientFeedback: zText(5000),
 });
 

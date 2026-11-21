@@ -11,7 +11,7 @@ import { zBool, zDate, zEmail, zOptEnum, zOptPhone, zText } from "../validators"
 
 const perm = z.string().refine(
   (p) => /^[a-z_]+:(read|write|delete|approve|all)$/.test(p) && RESOURCES.includes(p.split(":")[0] as never),
-  "Invalid permission"
+  "One of the selected extra permissions is not recognised"
 );
 
 const base = {

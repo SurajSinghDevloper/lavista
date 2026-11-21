@@ -5,7 +5,7 @@ import { Download } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { DataTable } from "@/components/data-table";
-import { Button, Card, Loading, PageHeader, Progress, StatusBadge, cx } from "@/components/ui";
+import { Button, Card, LoadError, Loading, PageHeader, Progress, StatusBadge, cx } from "@/components/ui";
 import { useOne } from "@/hooks/use-api";
 import { EXPENSE_CATEGORIES, LEAD_SOURCES, PAYMENT_MODES, PROJECT_STAGES, ROLES, labelOf } from "@/lib/constants";
 import { money, moneyShort, toInputDate } from "@/lib/format";
@@ -40,7 +40,7 @@ export function ReportsPage() {
   const router = useRouter();
   const [from, setFrom] = useState(() => toInputDate(new Date(new Date().getFullYear(), new Date().getMonth() - 11, 1)));
   const [to, setTo] = useState(() => toInputDate(new Date()));
-  const { data, isLoading } = useOne<any>(`/reports?from=${from}&to=${to}`);
+  const { data, isLoading, error, mutate } = useOne<any>(`/reports?from=${from}&to=${to}`);
   return (
     <div className="space-y-5">
       <PageHeader
@@ -54,7 +54,9 @@ export function ReportsPage() {
           </>
         }
       />
-      {isLoading || !data ? (
+      {!data && error && !isLoading ? (
+        <LoadError error={error} onRetry={() => mutate()} />
+      ) : isLoading || !data ? (
         <Loading />
       ) : (
         <>

@@ -10,7 +10,7 @@ import { api, qs } from "@/lib/api-client";
 import type { Option } from "@/lib/constants";
 import type { Resource } from "@/lib/permissions";
 import { EntitySelect, FormDrawer, type Field, type RefConfig } from "./form";
-import { Button, cx, Empty, IconButton, Menu, MenuItem, PageHeader, Skeleton, useConfirm, useToast } from "./ui";
+import { Button, cx, Empty, IconButton, LoadError, Menu, MenuItem, PageHeader, Skeleton, useConfirm, useToast } from "./ui";
 
 export type Column<T = Row> = {
   key: string;
@@ -91,6 +91,8 @@ export function DataTable<T extends Row>({
   empty,
   rowActions,
   footer,
+  error,
+  onRetry,
 }: {
   columns: Column<T>[];
   rows: T[];
@@ -99,6 +101,9 @@ export function DataTable<T extends Row>({
   empty?: ReactNode;
   rowActions?: (row: T) => ReactNode;
   footer?: ReactNode;
+  /** load error → explain it instead of showing "nothing found" */
+  error?: unknown;
+  onRetry?: () => void;
 }) {
   return (
     <div className="overflow-x-auto">
@@ -142,7 +147,7 @@ export function DataTable<T extends Row>({
         </tbody>
         {footer}
       </table>
-      {!loading && rows.length === 0 && (empty ?? <Empty />)}
+      {!loading && rows.length === 0 && (error ? <LoadError compact error={error} onRetry={onRetry} /> : (empty ?? <Empty />))}
     </div>
   );
 }
@@ -250,7 +255,7 @@ export function ResourcePage(p: ResourcePageProps) {
   const [creating, setCreating] = useState(false);
 
   const params = { q, page, limit: p.limit ?? 20, sort: p.sort, ...p.baseParams, ...filterValues };
-  const { rows, meta, loading, mutate } = useList(p.endpoint, params);
+  const { rows, meta, loading, mutate, error } = useList(p.endpoint, params);
   const reload = () => {
     mutate();
     if (p.invalidates) invalidate(...p.invalidates);
@@ -365,7 +370,7 @@ export function ResourcePage(p: ResourcePageProps) {
           )}
           {p.embedded && <div className="ml-auto flex gap-2">{p.headerActions}{exportBtn}{createBtn}</div>}
         </div>
-        <DataTable columns={p.columns} rows={rows} loading={loading} onRowClick={click} rowActions={actions} empty={<Empty title={`No ${name}s found`} hint={canWrite && p.fields ? `Click "${p.createLabel ?? "Add"}" to create one.` : undefined} />} />
+        <DataTable columns={p.columns} rows={rows} loading={loading} error={error} onRetry={() => mutate()} onRowClick={click} rowActions={actions} empty={<Empty title={`No ${name}s found`} hint={canWrite && p.fields ? `Click "${p.createLabel ?? "Add"}" to create one.` : undefined} />} />
         {meta && <Pagination page={meta.page} pages={meta.pages} total={meta.total} onPage={setPage} />}
       </div>
       {p.fields && (

@@ -3,7 +3,8 @@
 import { clsx } from "clsx";
 import { Loader2, X } from "lucide-react";
 import Link from "next/link";
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { ApiClientError } from "@/lib/api-client";
 import { colorOf, labelOf, type Option } from "@/lib/constants";
 import { initials } from "@/lib/format";
 
@@ -177,6 +178,23 @@ export function Skeleton({ className }: { className?: string }) {
   return <div className={cx("animate-pulse rounded-md bg-stone-200/70", className)} />;
 }
 
+/** Shown when data couldn't be loaded – says why in plain words and offers a retry. */
+export function LoadError({ error, onRetry, compact }: { error: unknown; onRetry?: () => void; compact?: boolean }) {
+  const status = error instanceof ApiClientError ? error.status : 0;
+  const title = status === 404 ? "Not found" : status === 403 ? "No access" : "Couldn't load this";
+  return (
+    <div className={cx("mx-auto flex max-w-md flex-col items-center gap-2 text-center", compact ? "px-4 py-10" : "mt-16 rounded-xl border border-line bg-white p-8")}>
+      <p className="font-display text-xl font-semibold">{title}</p>
+      <p className="text-sm text-muted">{userMessage(error)}</p>
+      {onRetry && status !== 404 && status !== 403 && (
+        <Button variant="secondary" size="sm" className="mt-2" onClick={onRetry}>
+          Try again
+        </Button>
+      )}
+    </div>
+  );
+}
+
 export function Empty({ title = "Nothing here yet", hint, action, icon }: { title?: string; hint?: ReactNode; action?: ReactNode; icon?: ReactNode }) {
   return (
     <div className="flex flex-col items-center justify-center gap-2 px-4 py-12 text-center">
@@ -300,8 +318,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setItems((x) => [...x, { id, kind, message }]);
     setTimeout(() => setItems((x) => x.filter((t) => t.id !== id)), kind === "error" ? 6000 : 3500);
   }, []);
+  // stable value: showing a toast must not re-render every screen that can show one
+  const toastApi = useMemo(() => ({ push }), [push]);
   return (
-    <ToastCtx value={{ push }}>
+    <ToastCtx value={toastApi}>
       {children}
       <div className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
         {items.map((t) => (
@@ -322,13 +342,28 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * What a person sees for any error: server messages are already written for users;
+ * our own strings are shown as-is; anything else (a bug, a library error) becomes a generic sentence
+ * and the real error goes to the browser console for developers.
+ */
+export function userMessage(e: unknown): string {
+  if (e instanceof ApiClientError) return e.message;
+  if (typeof e === "string" && e.trim()) return e;
+  if (e instanceof Error && e.name !== "AbortError") console.error(e);
+  return "Something went wrong. Please try again – if it keeps happening, refresh the page.";
+}
+
 export function useToast() {
   const ctx = useContext(ToastCtx);
-  return {
-    success: (m: string) => ctx?.push("success", m),
-    error: (m: unknown) => ctx?.push("error", m instanceof Error ? m.message : String(m)),
-    info: (m: string) => ctx?.push("info", m),
-  };
+  return useMemo(
+    () => ({
+      success: (m: string) => ctx?.push("success", m),
+      error: (m: unknown) => ctx?.push("error", userMessage(m)),
+      info: (m: string) => ctx?.push("info", m),
+    }),
+    [ctx]
+  );
 }
 
 /* ------------------------------ Confirm dialog --------------------------- */

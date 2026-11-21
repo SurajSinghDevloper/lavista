@@ -1,13 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useContext, useMemo, useRef, type ReactNode } from "react";
 import { SWRConfig } from "swr";
 import { useOne } from "@/hooks/use-api";
-import { api } from "@/lib/api-client";
+import { api, ApiClientError } from "@/lib/api-client";
 import type { Role } from "@/lib/constants";
 import { can as canCheck, canAny as canAnyCheck, type Permission } from "@/lib/permissions";
-import { ConfirmProvider, Loading as PageLoading, ToastProvider } from "./ui";
+import { ConfirmProvider, Loading as PageLoading, ToastProvider, useToast, userMessage } from "./ui";
 
 export type Me = {
   id: string;
@@ -33,29 +33,56 @@ const Ctx = createContext<AuthCtx | null>(null);
 
 function AuthInner({ children }: { children: ReactNode }) {
   const { data, isLoading, mutate } = useOne<Me>("/auth/me", { revalidateOnFocus: true, dedupingInterval: 30_000 });
-  const value: AuthCtx = {
-    user: data,
-    loading: isLoading,
-    can: (p) => canCheck(data?.permissions, p),
-    canAny: (p) => canAnyCheck(data?.permissions, p),
-    logout: async () => {
-      await api.post("/auth/logout").catch(() => undefined);
-      window.location.href = "/login";
-    },
-    reload: () => void mutate(),
-  };
+  // only changes when the user / permissions change, so screens don't re-render for nothing
+  const value = useMemo<AuthCtx>(
+    () => ({
+      user: data,
+      loading: isLoading,
+      can: (p) => canCheck(data?.permissions, p),
+      canAny: (p) => canAnyCheck(data?.permissions, p),
+      logout: async () => {
+        await api.post("/auth/logout").catch(() => undefined);
+        window.location.href = "/login";
+      },
+      reload: () => void mutate(),
+    }),
+    [data, isLoading, mutate]
+  );
   return <Ctx value={value}>{children}</Ctx>;
+}
+
+/** Any screen whose data fails to load tells the user why (same message is not repeated within 30 s). */
+function DataLayer({ children }: { children: ReactNode }) {
+  const toast = useToast(); // stable object
+  const last = useRef({ message: "", at: 0 });
+  // created once – a new config object would re-render every screen (and reset open forms)
+  const config = useMemo(
+    () => ({
+      revalidateOnFocus: false,
+      shouldRetryOnError: false,
+      onError: (err: unknown) => {
+        if (err instanceof ApiClientError && err.status === 401) return; // already sending them to the login page
+        const message = userMessage(err);
+        const now = Date.now();
+        if (message === last.current.message && now - last.current.at < 30_000) return;
+        last.current = { message, at: now };
+        toast.error(message);
+      },
+    }),
+    [toast]
+  );
+  return <SWRConfig value={config}>{children}</SWRConfig>;
 }
 
 export function Providers({ children }: { children: ReactNode }) {
   return (
-    <SWRConfig value={{ revalidateOnFocus: false, shouldRetryOnError: false }}>
-      <ToastProvider>
+    <ToastProvider>
+      <DataLayer>
         <ConfirmProvider>
           <AuthInner>{children}</AuthInner>
         </ConfirmProvider>
-      </ToastProvider>
-    </SWRConfig>
+      </DataLayer>
+    </ToastProvider>
   );
 }
 

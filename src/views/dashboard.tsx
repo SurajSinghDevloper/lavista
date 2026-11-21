@@ -4,7 +4,7 @@
 import { AlertTriangle, Building2, CheckCircle2, ClipboardList, IndianRupee, MapPin, MessageCircle, PhoneCall, TrendingUp, Users } from "lucide-react";
 import Link from "next/link";
 import { useAuth } from "@/components/auth";
-import { Card, Empty, Loading, PageHeader, Progress, StatCard, StatusBadge, cx } from "@/components/ui";
+import { Card, Empty, LoadError, Loading, PageHeader, Progress, StatCard, StatusBadge, cx } from "@/components/ui";
 import { useOne } from "@/hooks/use-api";
 import { FOLLOWUP_TYPES, LEAD_STATUS, PROJECT_STAGES, TASK_PRIORITY, labelOf } from "@/lib/constants";
 import { date, dateTime, isOverdue, isToday, money, moneyShort, relative, telLink, waLink } from "@/lib/format";
@@ -52,8 +52,8 @@ function Pipeline({ counts }: { counts: Record<string, number> }) {
 
 export default function Dashboard() {
   const { user } = useAuth();
-  const { data, isLoading } = useOne<any>("/dashboard", { refreshInterval: 120_000 });
-  if (isLoading || !data) return <Loading />;
+  const { data, isLoading, error, mutate } = useOne<any>("/dashboard", { refreshInterval: 120_000 });
+  if (!data) return error && !isLoading ? <LoadError error={error} onRetry={() => mutate()} /> : <Loading />;
   const { myWork, sales, sites, money: m, store, team, attendance, activity } = data;
   const hour = new Date().getHours();
   const greet = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";

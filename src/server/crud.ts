@@ -123,7 +123,7 @@ export function crud(cfg: CrudConfig) {
     let query = cfg.model.findOne({ _id: id, ...scope });
     if (cfg.populate) query = query.populate(cfg.populate);
     const doc = await query.lean();
-    if (!doc) throw notFound(`${cfg.entity} not found`);
+    if (!doc) throw notFound(`This ${cfg.entity.toLowerCase()} could not be found. It may have been deleted, or you may not have access to it.`);
     return serialize(doc);
   });
 
@@ -151,7 +151,7 @@ export function crud(cfg: CrudConfig) {
     let data: any = await parseBody(ctx.req, cfg.updateSchema);
     const scope = await scopeFor(cfg, ctx);
     const doc = await cfg.model.findOne({ _id: id, ...scope });
-    if (!doc) throw notFound(`${cfg.entity} not found`);
+    if (!doc) throw notFound(`This ${cfg.entity.toLowerCase()} could not be found. It may have been deleted, or you may not have access to it.`);
     if (cfg.projectScoped && data.project && String(data.project) !== String(doc.project)) {
       await assertProjectAccess(ctx.user, data.project);
     }
@@ -178,7 +178,7 @@ export function crud(cfg: CrudConfig) {
     const id = assertId(ctx.params.id);
     const scope = await scopeFor(cfg, ctx);
     const doc = await cfg.model.findOne({ _id: id, ...scope });
-    if (!doc) throw notFound(`${cfg.entity} not found`);
+    if (!doc) throw notFound(`This ${cfg.entity.toLowerCase()} could not be found. It may have been deleted, or you may not have access to it.`);
     if (cfg.beforeDelete) await cfg.beforeDelete(doc, ctx);
     await doc.deleteOne();
     if (cfg.afterDelete) await cfg.afterDelete(doc, ctx);

@@ -37,9 +37,9 @@ export const POST = publicApi(async ({ req, ip }) => {
     await dummyPasswordCheck(body.password);
     throw invalid;
   }
-  if (!user.isActive) throw new ApiError(403, "Your account is deactivated. Contact admin.", "ACCOUNT_DISABLED");
+  if (!user.isActive) throw new ApiError(403, "Your account has been deactivated. Please contact your admin.", "ACCOUNT_DISABLED");
   if (user.lockUntil && user.lockUntil > new Date()) {
-    throw new ApiError(423, "Account temporarily locked due to failed attempts. Try again later.", "ACCOUNT_LOCKED");
+    throw new ApiError(423, "Too many wrong passwords – this account is locked for 15 minutes. Try again later, or ask your admin to reset your password.", "ACCOUNT_LOCKED");
   }
   const valid = await verifyPassword(body.password, user.passwordHash);
   if (!valid) {
