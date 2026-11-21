@@ -15,6 +15,11 @@ const nextConfig: NextConfig = {
   partialPrefetching: true,
   poweredByHeader: false,
   serverExternalPackages: ["mongoose", "bcryptjs", "sharp"],
+  // sharp's native libvips libraries (.dll / .so) are loaded at runtime and not picked up by file tracing –
+  // ship the whole @img folder with the standalone server, otherwise thumbnails fail to load.
+  outputFileTracingIncludes: {
+    "/**": ["./node_modules/@img/**/*"],
+  },
   turbopack: {
     rules: {
       "*.css": {

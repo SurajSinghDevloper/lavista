@@ -159,13 +159,35 @@ export function corsHeaders(req: NextRequest): Record<string, string> {
   };
 }
 
+/**
+ * Hosts the browser is actually talking to. Behind nginx / a load balancer the app itself runs on
+ * e.g. http://127.0.0.1:4044, so the public host comes from X-Forwarded-Host or Host
+ * (both set by the browser/proxy – a cross-site page cannot forge them).
+ */
+function requestHosts(req: NextRequest) {
+  const hosts = new Set<string>([req.nextUrl.host.toLowerCase()]);
+  const fwd = req.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+  const host = req.headers.get("host")?.trim();
+  if (fwd) hosts.add(fwd.toLowerCase());
+  if (host) hosts.add(host.toLowerCase());
+  return hosts;
+}
+
 function checkCsrf(req: NextRequest, viaCookie: boolean) {
   if (!viaCookie) return; // Bearer tokens (mobile) are not subject to CSRF
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return;
-  const origin = req.headers.get("origin") || (req.headers.get("referer") ? new URL(req.headers.get("referer")!).origin : null);
-  if (!origin || !allowedOrigins(req).has(origin)) {
-    throw forbidden("Cross-site request blocked");
+  const raw = req.headers.get("origin") || req.headers.get("referer");
+  let origin: URL | null = null;
+  try {
+    origin = raw && raw !== "null" ? new URL(raw) : null;
+  } catch {
+    origin = null;
   }
+  if (!origin) throw forbidden("Cross-site request blocked (no Origin header)");
+  // 1) configured addresses (APP_URL, CORS_ORIGINS)  2) same host the page was loaded from (http or https)
+  if (allowedOrigins(req).has(origin.origin) || requestHosts(req).has(origin.host.toLowerCase())) return;
+  console.warn(`[csrf] blocked ${req.method} ${req.nextUrl.pathname} from ${origin.origin}; request hosts: ${[...requestHosts(req)].join(", ")}`);
+  throw forbidden(`Cross-site request blocked: ${origin.origin} is not an allowed address (set APP_URL to the address users open)`);
 }
 
 /* ------------------------------ Route wrapper ---------------------------- */

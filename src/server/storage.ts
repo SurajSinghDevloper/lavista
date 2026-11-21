@@ -3,7 +3,6 @@ import { createReadStream } from "node:fs";
 import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
-import sharp from "sharp";
 import { env } from "./env";
 
 /**
@@ -105,7 +104,25 @@ export async function readFileBytes(key: string) {
 export const THUMBNAIL_EXT = new Set(["jpg", "jpeg", "png", "webp", "gif"]);
 
 /** 480px WebP preview, auto-rotated from EXIF. Returns the storage key, or null if the image can't be decoded. */
+type SharpFn = (typeof import("sharp"))["default"];
+let sharpLoader: Promise<SharpFn | null> | null = null;
+/**
+ * sharp is a native module – load it lazily so that, if it is ever unavailable on a server,
+ * uploads still work (grids simply show originals) instead of breaking unrelated API routes.
+ */
+function loadSharp() {
+  sharpLoader ??= import("sharp")
+    .then((m): SharpFn => m.default)
+    .catch((e) => {
+      console.error("[storage] image thumbnails disabled – sharp could not be loaded:", e instanceof Error ? e.message.split("\n")[0] : e);
+      return null;
+    });
+  return sharpLoader;
+}
+
 export async function createThumbnail(data: Uint8Array): Promise<string | null> {
+  const sharp = await loadSharp();
+  if (!sharp) return null;
   try {
     const out = await sharp(data, { failOn: "none", limitInputPixels: 120_000_000 })
       .rotate()
