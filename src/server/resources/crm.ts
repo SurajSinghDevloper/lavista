@@ -16,7 +16,7 @@ import {
 import { can } from "@/lib/permissions";
 import { crud } from "../crud";
 import { api, assertId, badRequest, conflict, notFound, parseBody, type Ctx } from "../http";
-import { Client, FollowUp, Lead, Project, Quotation, SiteVisit, serialize } from "../models";
+import { Client, FileModel, FollowUp, Lead, Project, Quotation, SiteVisit, serialize } from "../models";
 import { audit, nextNumber, notify, projectFilter } from "../services/core";
 import { getSetting } from "../services/settings";
 import {
@@ -183,6 +183,12 @@ export const convertLead = api({ perm: ["leads:write", "projects:write"] }, asyn
   // carry pre-sales work to the site
   await SiteVisit.updateMany({ lead: lead._id, project: null }, { $set: { project: project._id } });
   await Quotation.updateMany({ lead: lead._id, project: null }, { $set: { project: project._id, client: client._id } });
+  // site photos / measurement sheets / AutoCAD files taken during pre-sales show up in the site's Files tab
+  const visitPhotos = (await SiteVisit.find({ lead: lead._id }).select("photos").lean<{ photos?: unknown[] }[]>()).flatMap((v) => v.photos ?? []);
+  await FileModel.updateMany(
+    { project: null, $or: [{ _id: { $in: visitPhotos } }, { entityType: "Lead", entityId: lead._id }] },
+    { $set: { project: project._id } }
+  );
 
   await audit(user, "convert", "Lead", lead._id, `Converted ${lead.name} → ${project.projectNo}`, { project: project._id, ip });
   await notify(

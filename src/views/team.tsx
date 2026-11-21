@@ -1,13 +1,13 @@
 "use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { KeyRound, LogOut, MapPin, Monitor, Plus, Save, ShieldCheck, Smartphone, Trash2, UserX } from "lucide-react";
+import { KeyRound, LogOut, MapPin, Monitor, MoreHorizontal, Pencil, Plus, Save, ShieldCheck, Smartphone, Trash2, UserX } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth";
 import { DataTable, ResourcePage } from "@/components/data-table";
 import { REF } from "@/components/domain";
 import { FormDrawer } from "@/components/form";
-import { Avatar, Badge, Button, Card, Empty, KV, Loading, MenuItem, Modal, PageHeader, StatusBadge, Tabs, useConfirm, useToast } from "@/components/ui";
+import { Avatar, Badge, Button, Card, Empty, IconButton, KV, Loading, Menu, MenuItem, Modal, PageHeader, StatusBadge, Tabs, useConfirm, useToast } from "@/components/ui";
 import { invalidate, useList, useOne } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { ATTENDANCE_STATUS, DEPARTMENTS, ROLES, labelOf } from "@/lib/constants";
@@ -120,9 +120,12 @@ export function TeamPage() {
 /* -------------------------------- Attendance ----------------------------- */
 export function AttendancePage() {
   const { can } = useAuth();
+  const toast = useToast();
+  const confirm = useConfirm();
   const all = can("attendance:all");
   const [day, setDay] = useState(toInputDate(new Date()));
   const [mark, setMark] = useState(false);
+  const [editing, setEditing] = useState<any>(null);
   const { rows, loading, mutate } = useList("/attendance", all ? { date: day, limit: 200 } : { limit: 60, sort: "-date" });
   const { rows: users } = useList(all ? "/users" : null, { isActive: true, limit: 200, sort: "name" });
   const present = new Set(rows.map((r) => r.user?.id));
@@ -147,6 +150,33 @@ export function AttendancePage() {
             loading={loading}
             rows={rows}
             empty={<Empty title="No attendance records" />}
+            onRowClick={all ? (r) => setEditing(r) : undefined}
+            rowActions={
+              all
+                ? (r) => (
+                    <Menu trigger={<IconButton label="Actions"><MoreHorizontal className="size-4" /></IconButton>}>
+                      <MenuItem icon={<Pencil className="size-4" />} onClick={() => setEditing(r)}>Correct entry</MenuItem>
+                      {can("attendance:delete") && (
+                        <MenuItem
+                          danger
+                          icon={<Trash2 className="size-4" />}
+                          onClick={async () => {
+                            if (!(await confirm({ title: `Delete ${r.user?.name}'s attendance for ${date(r.date)}?`, danger: true, confirmText: "Delete" }))) return;
+                            try {
+                              await api.del(`/attendance/${r.id}`);
+                              mutate();
+                            } catch (e) {
+                              toast.error(e);
+                            }
+                          }}
+                        >
+                          Delete
+                        </MenuItem>
+                      )}
+                    </Menu>
+                  )
+                : undefined
+            }
             columns={[
               ...(all ? [{ key: "user", label: "Member", render: (r: any) => <span className="flex items-center gap-2"><Avatar name={r.user?.name} size="sm" />{r.user?.name}</span> }] : [{ key: "date", label: "Date", render: (r: any) => date(r.date) }]),
               { key: "status", label: "Status", render: (r) => <StatusBadge options={ATTENDANCE_STATUS} value={r.status} /> },
@@ -171,6 +201,24 @@ export function AttendancePage() {
           </Card>
         )}
       </div>
+      {all && (
+        <FormDrawer
+          modal
+          open={!!editing}
+          onClose={() => setEditing(null)}
+          title={`Correct attendance – ${editing?.user?.name ?? ""}, ${date(editing?.date)}`}
+          endpoint="/attendance"
+          record={editing}
+          fields={[
+            { name: "status", label: "Status", type: "select", options: ATTENDANCE_STATUS, required: true },
+            { name: "checkIn", label: "Check-in", type: "datetime" },
+            { name: "checkOut", label: "Check-out", type: "datetime" },
+            { name: "project", label: "Site", type: "ref", ref: REF.activeProject },
+            { name: "notes", label: "Notes", type: "textarea", rows: 2 },
+          ]}
+          onSaved={() => mutate()}
+        />
+      )}
       {all && (
         <FormDrawer
           modal

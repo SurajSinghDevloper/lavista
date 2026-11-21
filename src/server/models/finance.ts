@@ -37,6 +37,7 @@ const InvoiceSchema = makeSchema({
   sgst: { type: Number, default: 0 },
   igst: { type: Number, default: 0 },
   taxAmount: { type: Number, default: 0 },
+  roundOff: { type: Number, default: 0 },
   total: { type: Number, default: 0 },
   amountPaid: { type: Number, default: 0 },
   balance: { type: Number, default: 0 },

@@ -1,12 +1,12 @@
 "use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { ChevronLeft, ChevronRight, MoreHorizontal, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, MoreHorizontal, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "@/components/auth";
 import { invalidate, useList, type Row } from "@/hooks/use-api";
-import { api } from "@/lib/api-client";
+import { api, qs } from "@/lib/api-client";
 import type { Option } from "@/lib/constants";
 import type { Resource } from "@/lib/permissions";
 import { EntitySelect, FormDrawer, type Field, type RefConfig } from "./form";
@@ -19,7 +19,69 @@ export type Column<T = Row> = {
   className?: string;
   align?: "left" | "right" | "center";
   hideOnMobile?: boolean;
+  /** Value written to the CSV/Excel export (defaults to the raw field). */
+  csv?: (row: T) => unknown;
 };
+
+/* ------------------------------- CSV export ------------------------------ */
+function csvCell(v: unknown): string | number {
+  if (v == null) return "";
+  if (Array.isArray(v)) return v.map(csvCell).join("; ");
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    return String(o.name ?? o.projectNo ?? o.poNo ?? o.woNo ?? o.invoiceNo ?? o.mrNo ?? o.title ?? o.id ?? "");
+  }
+  if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}T/.test(v)) return v.slice(0, 10);
+  if (typeof v === "boolean") return v ? "Yes" : "No";
+  return v as string | number;
+}
+
+/** Download every row matching the current filters (up to 5000) as a CSV that opens in Excel. */
+export async function exportCsv(endpoint: string, params: Record<string, unknown>, columns: Column[], name: string) {
+  const all: Row[] = [];
+  for (let page = 1; page <= 25; page++) {
+    const r = await api.list<Row>(`${endpoint}${qs({ ...params, page, limit: 200 })}`);
+    all.push(...r.data);
+    if (!r.meta || page >= r.meta.pages) break;
+  }
+  const cols = columns.filter((c) => c.csv || typeof c.label === "string");
+  const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const header = cols.map((c) => esc(typeof c.label === "string" && c.label ? c.label : c.key)).join(",");
+  const body = all.map((r) => cols.map((c) => esc(csvCell(c.csv ? c.csv(r) : (r as Record<string, unknown>)[c.key]))).join(",")).join("\n");
+  const blob = new Blob(["\uFEFF" + header + "\n" + body], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${name.replace(/[^\w-]+/g, "-").toLowerCase()}-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  return all.length;
+}
+
+export function ExportButton({ onExport }: { onExport: () => Promise<number> }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  return (
+    <Button
+      variant="secondary"
+      icon={<Download className="size-4" />}
+      loading={busy}
+      onClick={async () => {
+        setBusy(true);
+        try {
+          const n = await onExport();
+          toast.success(`Exported ${n} row${n === 1 ? "" : "s"}`);
+        } catch (e) {
+          toast.error(e);
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      Export
+    </Button>
+  );
+}
 
 export function DataTable<T extends Row>({
   columns,
@@ -255,6 +317,9 @@ export function ResourcePage(p: ResourcePageProps) {
         )
       : undefined;
 
+  const exportBtn = (
+    <ExportButton onExport={() => exportCsv(p.endpoint, { q, sort: p.sort, ...p.baseParams, ...filterValues }, p.columns, p.title ?? p.entityName ?? "export")} />
+  );
   const createBtn =
     (p.fields || p.onCreate) && canWrite && p.canCreate !== false ? (
       <Button icon={<Plus className="size-4" />} onClick={() => (p.onCreate ? p.onCreate() : setCreating(true))}>
@@ -271,6 +336,7 @@ export function ResourcePage(p: ResourcePageProps) {
           actions={
             <>
               {p.headerActions}
+              {exportBtn}
               {createBtn}
             </>
           }
@@ -297,7 +363,7 @@ export function ResourcePage(p: ResourcePageProps) {
               }}
             />
           )}
-          {p.embedded && <div className="ml-auto flex gap-2">{p.headerActions}{createBtn}</div>}
+          {p.embedded && <div className="ml-auto flex gap-2">{p.headerActions}{exportBtn}{createBtn}</div>}
         </div>
         <DataTable columns={p.columns} rows={rows} loading={loading} onRowClick={click} rowActions={actions} empty={<Empty title={`No ${name}s found`} hint={canWrite && p.fields ? `Click "${p.createLabel ?? "Add"}" to create one.` : undefined} />} />
         {meta && <Pagination page={meta.page} pages={meta.pages} total={meta.total} onPage={setPage} />}

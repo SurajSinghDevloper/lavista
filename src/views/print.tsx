@@ -150,7 +150,7 @@ export function InvoicePrint({ params }: { params: Promise<{ id: string }> }) {
             <Party title="Site" name={inv.project?.name} lines={[inv.project?.projectNo, inv.project?.siteAddress]} />
           </div>
           <ItemsTable items={inv.items} gst />
-          <Sum rows={[["Subtotal", inv.subtotal], ["Discount", -inv.discountAmount], ["Taxable value", inv.discountAmount ? inv.taxableAmount : undefined], ["CGST", inv.cgst], ["SGST", inv.sgst], ["IGST", inv.igst], ["Total", inv.total, true], ["Received", inv.amountPaid ? -inv.amountPaid : undefined], ["Balance due", inv.amountPaid ? inv.balance : undefined, true]]} />
+          <Sum rows={[["Subtotal", inv.subtotal], ["Discount", -inv.discountAmount], ["Taxable value", inv.discountAmount ? inv.taxableAmount : undefined], ["CGST", inv.cgst], ["SGST", inv.sgst], ["IGST", inv.igst], ["Round off", inv.roundOff], ["Total", inv.total, true], ["Received", inv.amountPaid ? -inv.amountPaid : undefined], ["Balance due", inv.amountPaid ? inv.balance : undefined, true]]} />
           <p className="mt-2 text-right text-xs italic text-stone-600">{amountInWords(inv.total)}</p>
           {inv.notes && <p className="mt-6 text-xs">{inv.notes}</p>}
           {inv.terms && <p className="mt-4 whitespace-pre-line text-xs text-stone-600">{inv.terms}</p>}

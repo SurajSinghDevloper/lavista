@@ -27,12 +27,12 @@ import {
   PurchaseOrder,
   Quotation,
   SiteVisit,
-  StockTxn,
   Task,
   WorkOrder,
   serialize,
 } from "../models";
 import { assertProjectAccess, audit, notify, projectFilter, round2 } from "../services/core";
+import { materialFromStockByProject, syncMilestones } from "../services/money";
 import { getSetting } from "../services/settings";
 import { aliasId, zDate, zId, zLocation, zMoney, zNum, zOptEnum, zPercent, zRef, zRefs, zStr, zTags, zText } from "../validators";
 
@@ -127,6 +127,9 @@ export const projects = crud({
     return data;
   },
   afterUpdate: async (doc, before, ctx) => {
+    if (doc.contractValue !== before.contractValue || JSON.stringify(doc.paymentSchedule) !== JSON.stringify(before.paymentSchedule)) {
+      await syncMilestones(doc._id);
+    }
     const was = new Set([before.manager, before.designer, before.supervisor, ...(before.members ?? [])].filter(Boolean).map(String));
     const added = [doc.manager, doc.designer, doc.supervisor, ...(doc.members ?? [])].filter((u) => u && !was.has(String(u)));
     await notify(added, { title: "You were added to a site", message: `${doc.projectNo} – ${doc.name}`, link: `/projects/${doc._id}`, type: "project" }, ctx.user.id);
@@ -187,19 +190,18 @@ const sumBy = async (model: any, match: any, field: string) => {
 
 export async function projectFinance(projectId: Types.ObjectId) {
   const match = { project: projectId };
-  const [received, spent, invoiced, poValue, woValue, siteMaterialValue] = await Promise.all([
+  const [received, spent, invoiced, poValue, woValue, stock] = await Promise.all([
     sumBy(Payment, match, "amount"),
     sumBy(Expense, match, "amount"),
-    sumBy(Invoice, { ...match, status: { $ne: "cancelled" } }, "total"),
-    sumBy(PurchaseOrder, { ...match, status: { $ne: "cancelled" } }, "total"),
+    sumBy(Invoice, { ...match, status: { $nin: ["cancelled", "draft"] } }, "total"),
+    sumBy(PurchaseOrder, { ...match, status: { $nin: ["cancelled", "draft"] } }, "total"),
     sumBy(WorkOrder, { ...match, status: { $ne: "terminated" } }, "amount"),
-    // stock issued from factory to this site (cost) minus returns
-    StockTxn.aggregate([
-      { $match: { project: projectId, type: { $in: ["issue", "return"] } } },
-      { $group: { _id: null, v: { $sum: "$value" } } },
-    ]).then((r) => round2(-(r[0]?.v ?? 0))),
+    materialFromStockByProject([projectId]),
   ]);
-  return { received, spent, invoiced, poValue, woValue, siteMaterialValue, balance: round2(received - spent) };
+  // B = cash spent on site + material issued from factory stock; C = A − B
+  const materialFromStock = stock.get(String(projectId)) ?? 0;
+  const cost = round2(spent + materialFromStock);
+  return { received, spent, materialFromStock, siteMaterialValue: materialFromStock, cost, invoiced, poValue, woValue, balance: round2(received - cost) };
 }
 
 export const projectSummary = api({ perm: "projects:read" }, async ({ params, user }) => {

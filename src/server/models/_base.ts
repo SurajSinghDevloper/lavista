@@ -4,7 +4,7 @@ import mongoose, { Schema, type Model, type SchemaDefinition, type SchemaOptions
 export const { ObjectId } = Schema.Types;
 export type AnyModel = Model<any>;
 
-const HIDDEN = new Set(["__v", "passwordHash", "failedLogins", "lockUntil", "tokenHash", "keyHash", "storageKey"]);
+const HIDDEN = new Set(["__v", "passwordHash", "failedLogins", "lockUntil", "tokenHash", "keyHash", "storageKey", "thumbKey"]);
 
 function transform(_doc: unknown, ret: Record<string, any>) {
   if (ret._id) ret.id = String(ret._id);

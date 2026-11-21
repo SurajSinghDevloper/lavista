@@ -1,13 +1,13 @@
 "use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { AlertTriangle, Building2, CheckCircle2, ClipboardList, IndianRupee, MapPin, PhoneCall, TrendingUp, Users } from "lucide-react";
+import { AlertTriangle, Building2, CheckCircle2, ClipboardList, IndianRupee, MapPin, MessageCircle, PhoneCall, TrendingUp, Users } from "lucide-react";
 import Link from "next/link";
 import { useAuth } from "@/components/auth";
 import { Card, Empty, Loading, PageHeader, Progress, StatCard, StatusBadge, cx } from "@/components/ui";
 import { useOne } from "@/hooks/use-api";
 import { FOLLOWUP_TYPES, LEAD_STATUS, PROJECT_STAGES, TASK_PRIORITY, labelOf } from "@/lib/constants";
-import { date, dateTime, isOverdue, isToday, money, moneyShort, relative, telLink } from "@/lib/format";
+import { date, dateTime, isOverdue, isToday, money, moneyShort, relative, telLink, waLink } from "@/lib/format";
 
 function CashflowChart({ data }: { data: { month: string; received: number; spent: number }[] }) {
   const max = Math.max(1, ...data.flatMap((d) => [d.received, d.spent]));
@@ -157,6 +157,38 @@ export default function Dashboard() {
               </Card>
             )}
           </div>
+
+          {m && m.dueMilestones?.length > 0 && (
+            <Card title="Client payments due" action={<Link href="/accounts" className="text-xs text-brand-700 hover:underline">Site accounts</Link>} padded={false}>
+              <ul className="divide-y divide-line">
+                {m.dueMilestones.map((d: any) => (
+                  <li key={d.projectId + d.milestone} className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5">
+                    <Link href={`/projects/${d.projectId}?tab=finance`} className="min-w-0 hover:underline">
+                      <p className="truncate text-sm font-medium">{d.project}</p>
+                      <p className="truncate text-xs text-muted">
+                        {d.client} · {d.milestone}
+                        {d.dueDate && <span className={cx(isOverdue(d.dueDate) && "text-red-600")}> · due {date(d.dueDate)}</span>}
+                      </p>
+                    </Link>
+                    <span className="flex items-center gap-2">
+                      <span className="text-sm font-semibold tabular-nums">{money(d.amount)}</span>
+                      {d.phone && (
+                        <a
+                          href={waLink(d.phone, `Dear ${d.client}, a gentle reminder that the "${d.milestone}" payment of ${money(d.amount)} for ${d.project} is now due. Thank you – LA-VISTA Interiors.`)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="Send WhatsApp reminder"
+                          className="rounded-lg p-1.5 text-emerald-600 hover:bg-emerald-50"
+                        >
+                          <MessageCircle className="size-4" />
+                        </a>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
 
           {m && (
             <Card title="Cash flow (last 6 months)">

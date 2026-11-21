@@ -18,6 +18,7 @@ import {
   serialize,
 } from "../models";
 import { accessibleProjectIds, projectFilter, round2 } from "../services/core";
+import { materialFromStockByProject } from "../services/money";
 import { monthlyCashflow } from "./finance";
 
 const startOfDay = (d = new Date()) => {
@@ -120,18 +121,33 @@ export const dashboard = api({ perm: "dashboard:read" }, async ({ user }) => {
   if (can(P, "accounts:read")) {
     const ids = await accessibleProjectIds(user);
     const pm = ids ? { project: { $in: ids } } : {};
-    const [recMonth, spentMonth, recAll, contract, poDue] = await Promise.all([
+    const live = await Project.find({ ...(ids ? { _id: { $in: ids } } : {}), status: { $ne: "cancelled" } })
+      .select("name projectNo contractValue paymentSchedule client")
+      .populate({ path: "client", select: "name phone" })
+      .lean<any[]>();
+    const [recMonth, spentMonth, recBySite, poDue] = await Promise.all([
       sum(Payment, { ...pm, date: { $gte: monthStart } }),
       sum(Expense, { date: { $gte: monthStart } }),
-      sum(Payment, pm),
-      Project.aggregate([{ $match: { ...(ids ? { _id: { $in: ids } } : {}), status: { $ne: "cancelled" } } }, { $group: { _id: null, t: { $sum: "$contractValue" } } }]),
+      Payment.aggregate([{ $match: { project: { $in: live.map((p) => p._id) } } }, { $group: { _id: "$project", t: { $sum: "$amount" } } }]),
       PurchaseOrder.aggregate([{ $match: { status: { $nin: ["cancelled", "draft"] } } }, { $group: { _id: null, t: { $sum: { $subtract: ["$total", "$paidAmount"] } } } }]),
     ]);
+    const rec = new Map(recBySite.map((r: any) => [String(r._id), r.t]));
+    // per site, never let one over-paid site hide another site's dues
+    const receivables = live.reduce((a, p) => a + Math.max(0, (p.contractValue ?? 0) - Number(rec.get(String(p._id)) ?? 0)), 0);
+    const dueMilestones = live
+      .flatMap((p) =>
+        (p.paymentSchedule ?? [])
+          .filter((m: any) => m.status === "due" && m.amount > 0)
+          .map((m: any) => ({ projectId: String(p._id), projectNo: p.projectNo, project: p.name, client: p.client?.name, phone: p.client?.phone, milestone: m.name, amount: m.amount, dueDate: m.dueDate ?? null }))
+      )
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 8);
     out.money = {
       receivedThisMonth: recMonth,
       spentThisMonth: spentMonth,
-      receivables: round2((contract[0]?.t ?? 0) - recAll),
+      receivables: round2(receivables),
       vendorPayables: round2(poDue[0]?.t ?? 0),
+      dueMilestones,
       cashflow: await monthlyCashflow(6, ids),
     };
   }
@@ -199,13 +215,16 @@ export const reports = api({ perm: "reports:read" }, async ({ req, user }) => {
       const projects = await Project.find(ids ? { _id: { $in: ids } } : {}).select("name projectNo stage status progress contractValue startDate expectedEndDate actualEndDate").lean<any[]>();
       const pids = projects.map((p) => p._id);
       const g = (m: any) => m.aggregate([{ $match: { project: { $in: pids } } }, { $group: { _id: "$project", t: { $sum: "$amount" } } }]);
-      const [r, e] = await Promise.all([g(Payment), g(Expense)]);
+      const [r, e, stock] = await Promise.all([g(Payment), g(Expense), materialFromStockByProject(pids)]);
       const R = new Map(r.map((x: any) => [String(x._id), x.t]));
       const E = new Map(e.map((x: any) => [String(x._id), x.t]));
       return projects.map((p) => {
         const received = round2(Number(R.get(String(p._id)) ?? 0));
         const spent = round2(Number(E.get(String(p._id)) ?? 0));
-        return { id: String(p._id), projectNo: p.projectNo, name: p.name, stage: p.stage, status: p.status, progress: p.progress, contractValue: p.contractValue, received, spent, margin: round2(received - spent), marginPct: received ? Math.round(((received - spent) / received) * 100) : 0, startDate: p.startDate, expectedEndDate: p.expectedEndDate, actualEndDate: p.actualEndDate };
+        const materialFromStock = stock.get(String(p._id)) ?? 0;
+        const cost = round2(spent + materialFromStock);
+        const margin = round2(received - cost);
+        return { id: String(p._id), projectNo: p.projectNo, name: p.name, stage: p.stage, status: p.status, progress: p.progress, contractValue: p.contractValue, received, spent, materialFromStock, cost, margin, marginPct: received ? Math.round((margin / received) * 100) : 0, startDate: p.startDate, expectedEndDate: p.expectedEndDate, actualEndDate: p.actualEndDate };
       });
     })(),
   ]);

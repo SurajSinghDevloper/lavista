@@ -1,7 +1,7 @@
 "use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { ArrowLeft, CheckCircle2, Copy, FilePlus2, MessageSquareWarning, Plus, Printer, Save, Send, XCircle } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Copy, FilePlus2, MessageCircle, MessageSquareWarning, Plus, Printer, Save, Send, XCircle } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { use, useMemo, useState } from "react";
@@ -13,11 +13,11 @@ import { Badge, Button, Card, Empty, Loading, Modal, PageHeader, StatusBadge, cx
 import { invalidate, useList, useOne } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { QUOTE_STATUS, QUOTE_TYPES, labelOf } from "@/lib/constants";
-import { date, money, toInputDate } from "@/lib/format";
+import { date, money, toInputDate, waLink } from "@/lib/format";
 
 export const quoteColumns = [
   { key: "quoteNo", label: "Quotation", render: (r: any) => <span><span className="font-medium">{r.title}</span><span className="block text-xs text-muted">{r.quoteNo} · v{r.version} · {labelOf(QUOTE_TYPES, r.type)}</span></span> },
-  { key: "for", label: "Site / customer", render: (r: any) => (r.project ? <ProjectLink project={r.project} /> : <span>{r.customerName}<span className="block text-xs text-muted">Lead</span></span>) },
+  { key: "for", label: "Site / customer", csv: (r: any) => r.project?.name ?? r.customerName, render: (r: any) => (r.project ? <ProjectLink project={r.project} /> : <span>{r.customerName}<span className="block text-xs text-muted">Lead</span></span>) },
   { key: "date", label: "Date", render: (r: any) => date(r.date), hideOnMobile: true },
   { key: "status", label: "Status", render: (r: any) => <span className="flex items-center gap-1"><StatusBadge options={QUOTE_STATUS} value={r.status} />{r.isFinal && <Badge color="green">Final</Badge>}</span> },
   { key: "total", label: "Total", render: (r: any) => <span className="font-semibold">{money(r.total)}</span>, align: "right" as const },
@@ -71,6 +71,7 @@ type Q = {
   type: string;
   project?: any;
   lead?: any;
+  client?: any;
   customerName?: string;
   customerPhone?: string;
   customerAddress?: string;
@@ -221,6 +222,24 @@ function Editor({ initial }: { initial: Q }) {
         actions={
           <>
             {q.id && <Button variant="secondary" icon={<Printer className="size-4" />} onClick={() => window.open(`/print/quotation/${q.id}`, "_blank")}>Print / PDF</Button>}
+            {q.id && (q.customerPhone || q.client?.phone || q.lead?.phone) && (
+              <Button
+                variant="secondary"
+                icon={<MessageCircle className="size-4" />}
+                onClick={() =>
+                  window.open(
+                    waLink(
+                      q.customerPhone || q.client?.phone || q.lead?.phone,
+                      `Dear ${q.customerName ?? "Sir/Madam"}, sharing our quotation ${q.quoteNo} (version ${q.version}) for "${q.title}": total ${money(t.total)} incl. GST${q.validUntil ? `, valid till ${date(q.validUntil)}` : ""}. The detailed PDF follows. – LA-VISTA Interiors`
+                    ),
+                    "_blank",
+                    "noopener"
+                  )
+                }
+              >
+                WhatsApp
+              </Button>
+            )}
             {q.id && can("quotations:write") && q.status !== "superseded" && (
               <Button variant="secondary" icon={<Copy className="size-4" />} onClick={() => setRevise(true)}>
                 Revise → v{(q.version ?? 1) + 1}

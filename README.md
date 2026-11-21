@@ -62,7 +62,17 @@ Demo team (with `seed:demo`), password `Team@12345`:
 | Bill generation of site | **Bills / invoices** (proforma, running, tax, final; CGST/SGST/IGST) |
 | Payment in advance, show site-wise (A, B, C = A−B) | **Site accounts** cards: Received (A) − Spent (B) = Balance (C), outstanding, next milestone; receipts, expenses, payables |
 | Website? Meta API? Map? | Website enquiry webhook, Meta Lead Ads webhook, Google Maps links for sites/visits/attendance |
-| Team management | **Team** (roles & permissions), **Attendance** (GPS check-in/out), notifications, activity log, reports |
+| Team management | **Team** (roles & permissions), **Attendance** (GPS check-in/out, manager corrections), notifications, activity log, reports |
+| Everyday extras | **Files & photos** with fast thumbnails, full-screen viewer (←/→, download), captions; **Export** to Excel/CSV on every list; **WhatsApp** share for quotations, bills, receipts and payment reminders; client payments due on the dashboard |
+
+### Accounting rules
+
+* **A – Received:** client payments for the site.
+* **B – Site cost:** expenses paid for the site **+** material issued to it from factory stock (at weighted average cost, minus returns).
+* **C – Balance:** A − B. **Outstanding:** contract value − A (contract value = approved working + additional quotations, incl. GST).
+* Factory stock purchases (expenses without a site, category *material / vendor payment*) are shown separately and are **not** office overheads — their cost reaches each site when the material is issued.
+* "Billed" counts issued bills only (drafts and cancelled bills excluded). GST bills are rounded to the nearest rupee (round-off line printed).
+* Payment milestones are settled in order from the total received and re-checked whenever a payment, the contract value or the schedule changes.
 
 Workflow stages: Site visit → 2D → 3D → Elevation → Working quotation → Contractor selection → Procurement → Execution → Billing → Handover → Closed (several move automatically).
 
@@ -110,7 +120,7 @@ docs/API.md           API guide for the mobile app
 5. waits for `/api/v1/health` (fails the build if the app or MongoDB is down) and keeps the last 3 images for rollback
 
 Jenkins needs only the `GitPat` credential (GitHub token) and a NodeJS tool named `NODE_HOME`.
-Uploaded files live in the Docker volume `lavista-uploads` (mounted at `/app/storage/uploads`) and survive redeploys.
+Uploaded files live on the server in `/var/lib/lavista/uploads` (`UPLOADS_HOST_DIR` in the Jenkinsfile), mounted into the container at `/app/storage/uploads`. They survive redeploys — include that folder in your backups. Images get a small WebP preview (`thumbs/` sub-folder) used by photo grids.
 
 Keep the GitHub repository **private** — the Jenkinsfile contains the production secrets.
 

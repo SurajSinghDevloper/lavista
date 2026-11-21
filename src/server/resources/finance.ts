@@ -6,6 +6,7 @@ import { crud } from "../crud";
 import { api, assertId, badRequest, notFound, parseBody } from "../http";
 import { Contractor, Expense, Invoice, Payment, Project, PurchaseOrder, Vendor, WorkOrder, serialize } from "../models";
 import { accessibleProjectIds, assertProjectAccess, audit, computeItems, notify, round2 } from "../services/core";
+import { MATERIAL_EXPENSE_CATEGORIES, materialFromStockByProject, syncMilestones } from "../services/money";
 import { getSetting } from "../services/settings";
 import { zDate, zId, zLineItem, zMoney, zOptEnum, zRef, zRefs, zText } from "../validators";
 import { syncPoPayment } from "./procurement";
@@ -13,26 +14,7 @@ import { advanceStageIf } from "./projects";
 import { syncWorkOrderPaid } from "./site";
 
 /* -------------------------- Milestone / invoice sync --------------------- */
-export async function syncMilestones(projectId: unknown) {
-  const p = await Project.findById(projectId);
-  if (!p) return;
-  const [r] = await Payment.aggregate([{ $match: { project: p._id } }, { $group: { _id: null, t: { $sum: "$amount" } } }]);
-  let remaining = r?.t ?? 0;
-  let prevPaid = true;
-  for (const m of p.paymentSchedule) {
-    const amt = m.amount ?? 0;
-    if (amt > 0 && remaining + 0.5 >= amt) {
-      m.status = "paid";
-      remaining -= amt;
-    } else {
-      // milestones are paid in order – a partial payment doesn't skip ahead
-      m.status = prevPaid || (m.dueDate && m.dueDate < new Date()) ? "due" : "upcoming";
-      prevPaid = false;
-      remaining = 0;
-    }
-  }
-  await p.save();
-}
+export { syncMilestones };
 
 export async function syncInvoice(invoiceId: unknown) {
   if (!invoiceId) return;
@@ -128,7 +110,8 @@ export function invoiceTotals(data: any) {
   const ratio = subtotal > 0 ? taxableAmount / subtotal : 0;
   const taxAmount = round2(items.reduce((s, i: any) => s + (i.amount * ratio * (Number(i.gstRate) || 0)) / 100, 0));
   const half = round2(taxAmount / 2);
-  const total = round2(taxableAmount + taxAmount);
+  const exact = round2(taxableAmount + taxAmount);
+  const total = Math.round(exact); // bills are rounded to the nearest rupee
   return {
     items,
     subtotal,
@@ -138,6 +121,7 @@ export function invoiceTotals(data: any) {
     igst: data.interState ? taxAmount : 0,
     cgst: data.interState ? 0 : half,
     sgst: data.interState ? 0 : round2(taxAmount - half),
+    roundOff: round2(total - exact),
     total,
     balance: round2(total - (Number(data.amountPaid) || 0)),
   };
@@ -282,12 +266,19 @@ export const accountsSummary = api({ perm: "accounts:read" }, async ({ user }) =
   const pids = projects.map((p) => p._id);
   const group = (model: any, field: string, extra: any = {}) =>
     model.aggregate([{ $match: { project: { $in: pids }, ...extra } }, { $group: { _id: "$project", t: { $sum: `$${field}` }, last: { $max: "$date" } } }]);
-  const [rec, exp, inv] = await Promise.all([group(Payment, "amount"), group(Expense, "amount"), group(Invoice, "total", { status: { $ne: "cancelled" } })]);
+  const [rec, exp, inv, stock] = await Promise.all([
+    group(Payment, "amount"),
+    group(Expense, "amount"),
+    group(Invoice, "total", { status: { $nin: ["cancelled", "draft"] } }),
+    materialFromStockByProject(pids),
+  ]);
   const m = (rows: any[]) => new Map(rows.map((r) => [String(r._id), r]));
   const R = m(rec), E = m(exp), I = m(inv);
   const sites = projects.map((p) => {
     const received = round2(R.get(String(p._id))?.t ?? 0);
     const spent = round2(E.get(String(p._id))?.t ?? 0);
+    const materialFromStock = stock.get(String(p._id)) ?? 0;
+    const cost = round2(spent + materialFromStock);
     const due = p.paymentSchedule?.find((x: any) => x.status === "due");
     return {
       id: String(p._id),
@@ -300,26 +291,39 @@ export const accountsSummary = api({ perm: "accounts:read" }, async ({ user }) =
       invoiced: round2(I.get(String(p._id))?.t ?? 0),
       received,
       spent,
-      balance: round2(received - spent),
+      materialFromStock,
+      cost,
+      balance: round2(received - cost),
       outstanding: round2((p.contractValue ?? 0) - received),
       lastPaymentAt: R.get(String(p._id))?.last ?? null,
       nextMilestone: due ? { name: due.name, amount: due.amount } : null,
     };
   });
-  const [overhead] = await Expense.aggregate([{ $match: { project: null } }, { $group: { _id: null, t: { $sum: "$amount" } } }]);
+  const noSite = await Expense.aggregate([
+    { $match: { project: null } },
+    { $group: { _id: { $in: ["$category", MATERIAL_EXPENSE_CATEGORIES] }, t: { $sum: "$amount" } } },
+  ]);
   const totals = sites.reduce(
     (a, s) => ({
       contractValue: a.contractValue + s.contractValue,
       received: a.received + s.received,
       spent: a.spent + s.spent,
+      materialFromStock: a.materialFromStock + s.materialFromStock,
+      cost: a.cost + s.cost,
       outstanding: a.outstanding + Math.max(0, s.outstanding),
       invoiced: a.invoiced + s.invoiced,
     }),
-    { contractValue: 0, received: 0, spent: 0, outstanding: 0, invoiced: 0 }
+    { contractValue: 0, received: 0, spent: 0, materialFromStock: 0, cost: 0, outstanding: 0, invoiced: 0 }
   );
+  const r2 = Object.fromEntries(Object.entries(totals).map(([k, v]) => [k, round2(v)])) as typeof totals;
   return {
     sites,
-    totals: { ...totals, balance: round2(totals.received - totals.spent), officeOverheads: round2(overhead?.t ?? 0) },
+    totals: {
+      ...r2,
+      balance: round2(totals.received - totals.cost),
+      officeOverheads: round2(noSite.find((x: any) => x._id === false)?.t ?? 0),
+      factoryPurchases: round2(noSite.find((x: any) => x._id === true)?.t ?? 0),
+    },
   };
 });
 

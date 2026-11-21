@@ -1,15 +1,15 @@
 "use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Check, Download, FileIcon, ImageIcon, Paperclip, Plus, Trash2, Upload, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Download, FileIcon, ImageIcon, Paperclip, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
 import Link from "next/link";
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invalidate, useList, useOne } from "@/hooks/use-api";
 import { api, fileUrl } from "@/lib/api-client";
 import { FILE_CATEGORIES, PROJECT_STAGES, ROLES, TRADES, UNITS, labelOf } from "@/lib/constants";
-import { date, dateTime, money, relative } from "@/lib/format";
+import { date, dateTime, fileSize, money, relative } from "@/lib/format";
 import { EntitySelect, type RefConfig } from "./form";
-import { Avatar, Button, cx, Empty, IconButton, useConfirm, useToast } from "./ui";
+import { Avatar, Button, cx, Empty, IconButton, Modal, useConfirm, useToast } from "./ui";
 
 /* ---------------------------- Reference configs -------------------------- */
 export const REF: Record<string, RefConfig> = {
@@ -366,62 +366,127 @@ export function Attachments({ files, onChange, meta, readOnly }: { files: (FileR
   );
 }
 
-export function FileGrid({ files, onRemove, onDelete }: { files: FileRow[]; onRemove?: (id: string) => void; onDelete?: (id: string) => void }) {
-  const [preview, setPreview] = useState<FileRow | null>(null);
+const PREVIEWABLE = /^image\/(jpeg|png|webp|gif)$/;
+
+function FileTile({ f, onOpen, onRemove, onEdit }: { f: FileRow; onOpen: () => void; onRemove?: () => void; onEdit?: () => void }) {
+  const img = PREVIEWABLE.test(f.mimeType);
+  const ext = f.originalName.split(".").pop()?.toUpperCase();
+  const [broken, setBroken] = useState(false);
+  return (
+    <div className="group relative overflow-hidden rounded-lg border border-line bg-stone-50">
+      <button type="button" onClick={onOpen} className="block aspect-[4/3] w-full" title={img ? "Preview" : f.mimeType === "application/pdf" ? "Open PDF" : "Open / download"}>
+        {img && !broken ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={fileUrl(f.id, false, true)} alt={f.caption ?? f.originalName} loading="lazy" onError={() => setBroken(true)} className="size-full object-cover" />
+        ) : (
+          <span className="flex size-full flex-col items-center justify-center gap-1 text-stone-400">
+            {f.mimeType.startsWith("image/") ? <ImageIcon className="size-8" /> : <FileIcon className={cx("size-8", f.mimeType === "application/pdf" && "text-red-400")} />}
+            <span className="text-[10px] font-semibold">{ext}</span>
+            {f.mimeType.includes("heic") && <span className="px-2 text-center text-[9px] leading-tight">iPhone photo – download to view</span>}
+          </span>
+        )}
+      </button>
+      <div className="flex items-center justify-between gap-1 border-t border-line bg-white px-2 py-1">
+        <span className="truncate text-[11px]" title={`${f.originalName} · ${fileSize(f.size)}`}>
+          {f.caption || f.originalName}
+        </span>
+        <span className="flex shrink-0 items-center">
+          {onEdit && (
+            <button type="button" className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-ink" title="Edit caption / category" onClick={onEdit}>
+              <Pencil className="size-3.5" />
+            </button>
+          )}
+          <a href={fileUrl(f.id, true)} className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-ink" title="Download">
+            <Download className="size-3.5" />
+          </a>
+          {onRemove && (
+            <button type="button" className="rounded p-1 text-stone-400 hover:bg-red-50 hover:text-red-600" title="Remove" onClick={onRemove}>
+              <X className="size-3.5" />
+            </button>
+          )}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** Full-screen photo viewer: arrows / keyboard to move, Esc to close. */
+function Lightbox({ images, index, onIndex, onClose }: { images: FileRow[]; index: number; onIndex: (i: number) => void; onClose: () => void }) {
+  const f = images[index];
+  const count = images.length;
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      if (e.key === "ArrowRight") onIndex((index + 1) % count);
+      if (e.key === "ArrowLeft") onIndex((index - 1 + count) % count);
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [index, count, onIndex, onClose]);
+  if (!f) return null;
+  const nav = "absolute top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white hover:bg-white/25";
+  return (
+    <div className="fixed inset-0 z-[70] flex flex-col bg-black/90" onClick={onClose}>
+      <div className="flex items-center justify-between gap-3 px-4 py-3 text-sm text-white" onClick={(e) => e.stopPropagation()}>
+        <span className="min-w-0 truncate">
+          {f.caption || f.originalName} <span className="text-white/50">· {index + 1} / {count} · {fileSize(f.size)}</span>
+        </span>
+        <span className="flex shrink-0 items-center gap-1">
+          <a href={fileUrl(f.id, true)} className="rounded p-2 hover:bg-white/15" title="Download original">
+            <Download className="size-5" />
+          </a>
+          <button type="button" className="rounded p-2 hover:bg-white/15" title="Close (Esc)" onClick={onClose}>
+            <X className="size-5" />
+          </button>
+        </span>
+      </div>
+      <div className="relative flex min-h-0 flex-1 items-center justify-center px-4 pb-4">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img key={f.id} src={fileUrl(f.id)} alt={f.originalName} className="max-h-full max-w-full rounded-lg object-contain" onClick={(e) => e.stopPropagation()} />
+        {count > 1 && (
+          <>
+            <button type="button" className={cx(nav, "left-4")} title="Previous (←)" onClick={(e) => (e.stopPropagation(), onIndex((index - 1 + count) % count))}>
+              <ChevronLeft className="size-6" />
+            </button>
+            <button type="button" className={cx(nav, "right-4")} title="Next (→)" onClick={(e) => (e.stopPropagation(), onIndex((index + 1) % count))}>
+              <ChevronRight className="size-6" />
+            </button>
+          </>
+        )}
+      </div>
+      {count > 1 && (
+        <div className="flex justify-center gap-2 overflow-x-auto px-4 pb-4" onClick={(e) => e.stopPropagation()}>
+          {images.map((im, i) => (
+            <button key={im.id} type="button" onClick={() => onIndex(i)} className={cx("size-12 shrink-0 overflow-hidden rounded border-2", i === index ? "border-white" : "border-transparent opacity-60")}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={fileUrl(im.id, false, true)} alt="" className="size-full object-cover" onError={(e) => (e.currentTarget.style.visibility = "hidden")} />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function FileGrid({ files, onRemove, onDelete, onEdit }: { files: FileRow[]; onRemove?: (id: string) => void; onDelete?: (id: string) => void; onEdit?: (f: FileRow) => void }) {
+  const [index, setIndex] = useState<number | null>(null);
   if (!files.length) return null;
-  const images = files.filter((f) => f.mimeType.startsWith("image/"));
+  const images = files.filter((f) => PREVIEWABLE.test(f.mimeType));
+  const remove = onDelete ?? onRemove;
   return (
     <>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-        {files.map((f) => {
-          const isImg = f.mimeType.startsWith("image/") && !f.mimeType.includes("heic");
-          return (
-            <div key={f.id} className="group relative overflow-hidden rounded-lg border border-line bg-stone-50">
-              <button type="button" onClick={() => (isImg ? setPreview(f) : window.open(fileUrl(f.id), "_blank"))} className="block aspect-[4/3] w-full">
-                {isImg ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={fileUrl(f.id)} alt={f.caption ?? f.originalName} loading="lazy" className="size-full object-cover" />
-                ) : (
-                  <span className="flex size-full flex-col items-center justify-center gap-1 text-stone-400">
-                    <FileIcon className="size-8" />
-                    <span className="text-[10px] font-semibold uppercase">{f.originalName.split(".").pop()}</span>
-                  </span>
-                )}
-              </button>
-              <div className="flex items-center justify-between gap-1 border-t border-line bg-white px-2 py-1">
-                <span className="truncate text-[11px]" title={f.originalName}>
-                  {f.caption || f.originalName}
-                </span>
-                <span className="flex shrink-0 items-center">
-                  <a href={fileUrl(f.id, true)} className="rounded p-1 text-stone-400 hover:bg-stone-100 hover:text-ink" title="Download">
-                    <Download className="size-3.5" />
-                  </a>
-                  {(onRemove || onDelete) && (
-                    <button type="button" className="rounded p-1 text-stone-400 hover:bg-red-50 hover:text-red-600" title="Remove" onClick={() => (onDelete ?? onRemove)!(f.id)}>
-                      <X className="size-3.5" />
-                    </button>
-                  )}
-                </span>
-              </div>
-            </div>
-          );
-        })}
+        {files.map((f) => (
+          <FileTile
+            key={f.id}
+            f={f}
+            onOpen={() => (PREVIEWABLE.test(f.mimeType) ? setIndex(images.findIndex((x) => x.id === f.id)) : window.open(fileUrl(f.id), "_blank", "noopener"))}
+            onRemove={remove ? () => remove(f.id) : undefined}
+            onEdit={onEdit ? () => onEdit(f) : undefined}
+          />
+        ))}
       </div>
-      {preview && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/85 p-4" onClick={() => setPreview(null)}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={fileUrl(preview.id)} alt={preview.originalName} className="max-h-full max-w-full rounded-lg object-contain" />
-          <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 gap-2" onClick={(e) => e.stopPropagation()}>
-            {images.length > 1 &&
-              images.map((im) => (
-                <button key={im.id} onClick={() => setPreview(im)} className={cx("size-12 overflow-hidden rounded border-2", im.id === preview.id ? "border-white" : "border-transparent opacity-60")}>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={fileUrl(im.id)} alt="" className="size-full object-cover" />
-                </button>
-              ))}
-          </div>
-        </div>
-      )}
+      {index !== null && <Lightbox images={images} index={index} onIndex={setIndex} onClose={() => setIndex(null)} />}
     </>
   );
 }
@@ -433,6 +498,18 @@ export function FileLibrary({ project, entityType, entityId, defaultCategory = "
   const toast = useToast();
   const confirm = useConfirm();
   const { rows, mutate, loading } = useList<FileRow>("/files", { project, entityType, entityId, category, limit: 200 });
+  const [editing, setEditing] = useState<FileRow | null>(null);
+  const [caption, setCaption] = useState("");
+  const [editCat, setEditCat] = useState("other");
+  const saveEdit = async () => {
+    try {
+      await api.patch(`/files/${editing!.id}`, { caption, category: editCat });
+      setEditing(null);
+      mutate();
+    } catch (e) {
+      toast.error(e);
+    }
+  };
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -462,6 +539,7 @@ export function FileLibrary({ project, entityType, entityId, defaultCategory = "
       ) : (
         <FileGrid
           files={rows}
+          onEdit={canUpload ? (file) => (setEditing(file), setCaption(file.caption ?? ""), setEditCat(file.category ?? "other")) : undefined}
           onDelete={async (id) => {
             if (!(await confirm({ title: "Delete this file?", danger: true, confirmText: "Delete" }))) return;
             try {
@@ -473,6 +551,34 @@ export function FileLibrary({ project, entityType, entityId, defaultCategory = "
           }}
         />
       )}
+      <Modal
+        open={!!editing}
+        onClose={() => setEditing(null)}
+        title="Edit file details"
+        size="sm"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setEditing(null)}>Cancel</Button>
+            <Button onClick={saveEdit}>Save</Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <p className="truncate text-xs text-muted">{editing?.originalName}</p>
+          <div>
+            <label className="label">Caption</label>
+            <input className="input" value={caption} onChange={(e) => setCaption(e.target.value)} placeholder="e.g. Kitchen – wall A before work" />
+          </div>
+          <div>
+            <label className="label">Category</label>
+            <select className="input" value={editCat} onChange={(e) => setEditCat(e.target.value)}>
+              {FILE_CATEGORIES.map((c) => (
+                <option key={c.value} value={c.value}>{c.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

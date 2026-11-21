@@ -6,6 +6,7 @@ import { defineModel, makeSchema, ObjectId } from "./_base";
 const FileSchema = makeSchema({
   originalName: { type: String, required: true },
   storageKey: { type: String, required: true, unique: true }, // relative path inside storage driver
+  thumbKey: String, // small WebP preview for images
   mimeType: { type: String, required: true },
   size: { type: Number, required: true },
   category: { type: String, enum: values(FILE_CATEGORIES), default: "other", index: true },

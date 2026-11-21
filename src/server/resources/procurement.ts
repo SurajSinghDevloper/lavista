@@ -282,6 +282,10 @@ export const materialRequests = crud({
     if (existing.status !== "pending") throw badRequest("Only pending requests can be edited");
     return data;
   },
+  beforeDelete: (doc) => {
+    // once approved, stock may have been issued / POs raised against it – keep the trail
+    if (!["pending", "rejected"].includes(doc.status)) throw badRequest("Only pending or rejected requests can be deleted");
+  },
 });
 
 export const decideMaterialRequest = api({ perm: "material_requests:approve" }, async ({ req, params, user, ip }) => {

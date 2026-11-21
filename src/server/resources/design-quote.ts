@@ -6,6 +6,7 @@ import { crud } from "../crud";
 import { api, assertId, badRequest, notFound, parseBody } from "../http";
 import { Client, Design, Lead, Project, Quotation, serialize } from "../models";
 import { assertProjectAccess, audit, computeItems, nextNumber, notify, projectScopedFilter, round2 } from "../services/core";
+import { syncMilestones } from "../services/money";
 import { getSetting } from "../services/settings";
 import { zDate, zLineItem, zNum, zOptEnum, zRef, zRefs, zStr, zText } from "../validators";
 import { advanceStageIf } from "./projects";
@@ -224,6 +225,7 @@ export async function recomputeContractValue(projectId: unknown) {
     return { ...o, amount: o.percent ? Math.round((value * o.percent) / 100) : o.amount };
   });
   await p.save();
+  await syncMilestones(projectId);
 }
 
 const statusBody = z.object({

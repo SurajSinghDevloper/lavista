@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
+import sharp from "sharp";
 import { env } from "./env";
 
 /**
@@ -80,9 +81,9 @@ export function sniffOk(ext: string, head: Uint8Array) {
   }
 }
 
-export async function saveFile(data: Uint8Array, ext: string) {
+export async function saveFile(data: Uint8Array, ext: string, prefix = "") {
   const d = new Date();
-  const key = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${randomUUID()}.${ext}`;
+  const key = `${prefix}${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${randomUUID()}.${ext}`;
   const full = resolveKey(key);
   await mkdir(path.dirname(full), { recursive: true });
   await writeFile(full, data);
@@ -94,6 +95,27 @@ export async function fileStream(key: string) {
   const s = await stat(full);
   const stream = Readable.toWeb(createReadStream(full)) as ReadableStream;
   return { stream, size: s.size };
+}
+
+export async function readFileBytes(key: string) {
+  return new Uint8Array(await readFile(resolveKey(key)));
+}
+
+/** Image types we create small previews for (grids load these instead of 5–10 MB phone photos). */
+export const THUMBNAIL_EXT = new Set(["jpg", "jpeg", "png", "webp", "gif"]);
+
+/** 480px WebP preview, auto-rotated from EXIF. Returns the storage key, or null if the image can't be decoded. */
+export async function createThumbnail(data: Uint8Array): Promise<string | null> {
+  try {
+    const out = await sharp(data, { failOn: "none", limitInputPixels: 120_000_000 })
+      .rotate()
+      .resize(480, 480, { fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 72 })
+      .toBuffer();
+    return await saveFile(new Uint8Array(out), "webp", "thumbs/");
+  } catch {
+    return null;
+  }
 }
 
 export async function removeFile(key: string) {

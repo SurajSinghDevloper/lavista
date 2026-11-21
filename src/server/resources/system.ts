@@ -21,7 +21,7 @@ import {
 } from "../models";
 import { accessibleProjectIds, assertProjectAccess, audit, projectFilter } from "../services/core";
 import { getAllSettings, SETTING_KEYS, setSetting } from "../services/settings";
-import { ALLOWED_TYPES, extensionOf, fileStream, INLINE_TYPES, removeFile, saveFile, sniffOk } from "../storage";
+import { ALLOWED_TYPES, createThumbnail, extensionOf, fileStream, INLINE_TYPES, readFileBytes, removeFile, saveFile, sniffOk, THUMBNAIL_EXT } from "../storage";
 
 /* ---------------------------------- Files -------------------------------- */
 export const uploadFile = api({ perm: "files:write", rate: { limit: 120, windowSec: 300 } }, async ({ req, user, ip }) => {
@@ -56,9 +56,11 @@ export const uploadFile = api({ perm: "files:write", rate: { limit: 120, windowS
     const bytes = new Uint8Array(await f.arrayBuffer());
     if (!sniffOk(ext, bytes.subarray(0, 64))) throw badRequest(`${f.name} content does not match its extension`);
     const storageKey = await saveFile(bytes, ext);
+    const thumbKey = THUMBNAIL_EXT.has(ext) ? await createThumbnail(bytes) : null;
     const doc = await FileModel.create({
       originalName: f.name.replace(/[^\w.\- ()]/g, "_").slice(0, 200),
       storageKey,
+      thumbKey: thumbKey ?? undefined,
       mimeType: mime,
       size: f.size,
       category,
@@ -102,23 +104,47 @@ async function loadFileFor(user: any, id: string) {
   return f;
 }
 
-export const downloadFile = api({ perm: "files:read", rate: { limit: 2000, windowSec: 300 } }, async ({ req, params, user }) => {
+/**
+ * GET /files/:id/download            original (inline for images/PDF/video, attachment otherwise)
+ * GET /files/:id/download?thumb=1    small WebP preview for images (created on first request for older files)
+ * GET /files/:id/download?download=1 force "save as"
+ */
+export const downloadFile = api({ perm: "files:read", rate: { limit: 3000, windowSec: 300 } }, async ({ req, params, user }) => {
   const f = await loadFileFor(user, assertId(params.id));
-  const { stream, size } = await fileStream(f.storageKey).catch(() => {
+  const sp = req.nextUrl.searchParams;
+  let key: string = f.storageKey;
+  let mime: string = f.mimeType;
+  if (sp.get("thumb") === "1" && THUMBNAIL_EXT.has(extensionOf(f.storageKey))) {
+    if (!f.thumbKey) {
+      const bytes = await readFileBytes(f.storageKey).catch(() => null);
+      const thumbKey = bytes ? await createThumbnail(bytes) : null;
+      if (thumbKey) {
+        await FileModel.updateOne({ _id: f._id }, { $set: { thumbKey } });
+        f.thumbKey = thumbKey;
+      }
+    }
+    if (f.thumbKey) {
+      key = f.thumbKey;
+      mime = "image/webp";
+    }
+  }
+  const { stream, size } = await fileStream(key).catch(() => {
     throw notFound("File missing from storage");
   });
-  const inline = req.nextUrl.searchParams.get("download") !== "1" && INLINE_TYPES.has(f.mimeType);
+  const inline = sp.get("download") !== "1" && INLINE_TYPES.has(mime);
   const name = encodeURIComponent(f.originalName);
-  return new Response(stream, {
-    headers: {
-      "Content-Type": f.mimeType,
-      "Content-Length": String(size),
-      "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${name}`,
-      "Cache-Control": "private, max-age=86400",
-      "X-Content-Type-Options": "nosniff",
-      "Content-Security-Policy": "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox",
-    },
-  });
+  const headers: Record<string, string> = {
+    "Content-Type": mime,
+    "Content-Length": String(size),
+    "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${name}`,
+    "Cache-Control": "private, max-age=86400",
+    "X-Content-Type-Options": "nosniff",
+  };
+  // Images/video get a locked-down sandbox. PDFs don't: a sandboxed document blocks the browser's PDF viewer.
+  if (mime !== "application/pdf") {
+    headers["Content-Security-Policy"] = "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox";
+  }
+  return new Response(stream, { headers });
 });
 
 export const fileMeta = api({ perm: "files:read" }, async ({ params, user }) => serialize(await loadFileFor(user, assertId(params.id))));
@@ -135,6 +161,7 @@ export const deleteFile = api({ perm: "files:write" }, async ({ params, user, ip
   if (String(f.uploadedBy) !== user.id && !can(user.permissions, "files:delete")) throw forbidden("Only the uploader or a manager can delete this file");
   await FileModel.deleteOne({ _id: f._id });
   await removeFile(f.storageKey);
+  if (f.thumbKey) await removeFile(f.thumbKey);
   await audit(user, "delete", "File", f._id, `Deleted file ${f.originalName}`, { project: f.project, ip });
   return { id: String(f._id) };
 });

@@ -172,7 +172,7 @@ export const workOrderColumns: Column[] = [
   { key: "contractor", label: "Contractor", render: (r) => <span>{r.contractor?.name}<span className="block text-xs text-muted">{labelOf(TRADES, r.trade)}</span></span> },
   { key: "amount", label: "Amount", render: (r) => money(r.amount), align: "right" },
   { key: "paidAmount", label: "Paid", render: (r) => money(r.paidAmount), align: "right" },
-  { key: "due", label: "Balance", render: (r) => <span className={r.amount - r.paidAmount > 0 ? "text-amber-700" : ""}>{money((r.amount ?? 0) - (r.paidAmount ?? 0))}</span>, align: "right" },
+  { key: "due", label: "Balance", render: (r) => <span className={r.amount - r.paidAmount > 0 ? "text-amber-700" : ""}>{money((r.amount ?? 0) - (r.paidAmount ?? 0))}</span>, align: "right", csv: (r) => (r.amount ?? 0) - (r.paidAmount ?? 0) },
   { key: "status", label: "Status", render: (r) => <StatusBadge options={WORK_ORDER_STATUS} value={r.status} /> },
 ];
 
@@ -206,7 +206,7 @@ export const followupFields: Field[] = [
 ];
 export const followupColumns: Column[] = [
   { key: "scheduledAt", label: "When", render: (r) => <span className={r.status === "pending" && isOverdue(r.scheduledAt) ? "font-medium text-red-600" : ""}>{dateTime(r.scheduledAt)}</span> },
-  { key: "lead", label: "Lead", render: (r) => (r.lead ? <span><span className="font-medium">{r.lead.name}</span><span className="block text-xs text-muted">{r.lead.phone}</span></span> : <ProjectLink project={r.project} />) },
+  { key: "lead", label: "Lead", csv: (r) => r.lead?.name ?? r.project?.name, render: (r) => (r.lead ? <span><span className="font-medium">{r.lead.name}</span><span className="block text-xs text-muted">{r.lead.phone}</span></span> : <ProjectLink project={r.project} />) },
   { key: "type", label: "Type", render: (r) => labelOf(FOLLOWUP_TYPES, r.type) },
   { key: "purpose", label: "Purpose", render: (r) => <span className="line-clamp-2 max-w-xs">{r.purpose}</span> },
   { key: "assignedTo", label: "Owner", render: (r) => <Person user={r.assignedTo} />, hideOnMobile: true },
@@ -253,7 +253,7 @@ export const expenseColumns: Column[] = [
   { key: "date", label: "Date", render: (r) => date(r.date) },
   { key: "category", label: "Category", render: (r) => <Badge>{labelOf(EXPENSE_CATEGORIES, r.category)}</Badge> },
   { key: "project", label: "Site", render: (r) => (r.project ? <ProjectLink project={r.project} /> : <span className="text-xs text-muted">Office</span>) },
-  { key: "payee", label: "Paid to", render: (r) => <span>{r.payee ?? r.vendor?.name ?? r.contractor?.name}<span className="block text-xs text-muted">{r.purchaseOrder?.poNo ?? r.workOrder?.woNo ?? ""}</span></span> },
+  { key: "payee", label: "Paid to", csv: (r) => r.payee ?? r.vendor?.name ?? r.contractor?.name, render: (r) => <span>{r.payee ?? r.vendor?.name ?? r.contractor?.name}<span className="block text-xs text-muted">{r.purchaseOrder?.poNo ?? r.workOrder?.woNo ?? ""}</span></span> },
   { key: "mode", label: "Mode", render: (r) => labelOf(PAYMENT_MODES, r.mode), hideOnMobile: true },
   { key: "amount", label: "Amount", render: (r) => <span className="font-semibold text-red-700">{money(r.amount)}</span>, align: "right" },
 ];

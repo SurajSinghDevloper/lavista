@@ -88,10 +88,39 @@ export const toggleChecklistItem = api({ perm: "checklists:write" }, async ({ re
   it.checkedAt = body.checked ? new Date() : undefined;
   if (body.remark !== undefined) it.remark = body.remark;
   if (body.photo !== undefined) it.photo = body.photo ?? undefined;
+  await saveChecklist(c);
+  return serialize(c.toJSON());
+});
+
+async function saveChecklist(c: any) {
   const allDone = !c.isTemplate && c.items.length > 0 && c.items.every((i: any) => i.checked);
   c.status = allDone ? "completed" : "open";
   c.completedAt = allDone ? new Date() : undefined;
   await c.save();
+}
+
+async function loadChecklist(user: any, id: string) {
+  const c = await Checklist.findById(id);
+  if (!c) throw notFound("Checklist not found");
+  if (c.project) await assertProjectAccess(user, c.project);
+  return c;
+}
+
+/** Add a site-specific check to an existing checklist (keeps who/when on the other items). */
+export const addChecklistItem = api({ perm: "checklists:write" }, async ({ req, params, user }) => {
+  const c = await loadChecklist(user, assertId(params.id));
+  const { text } = await parseBody(req, z.object({ text: zStr(500) }));
+  c.items.push({ text });
+  await saveChecklist(c);
+  return serialize(c.toJSON());
+});
+
+export const removeChecklistItem = api({ perm: "checklists:write" }, async ({ params, user }) => {
+  const c = await loadChecklist(user, assertId(params.id));
+  const it = c.items.id(assertId(params.itemId, "item"));
+  if (!it) throw notFound("Item not found");
+  it.deleteOne();
+  await saveChecklist(c);
   return serialize(c.toJSON());
 });
 

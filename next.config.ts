@@ -14,7 +14,7 @@ const nextConfig: NextConfig = {
   cacheComponents: true,
   partialPrefetching: true,
   poweredByHeader: false,
-  serverExternalPackages: ["mongoose", "bcryptjs"],
+  serverExternalPackages: ["mongoose", "bcryptjs", "sharp"],
   turbopack: {
     rules: {
       "*.css": {

@@ -17,9 +17,9 @@ import { date, dateTime, money, number, toInputDate } from "@/lib/format";
 import { expenseColumns, materialFields, vendorColumns, vendorFields } from "./config";
 
 /* ---------------------------- Material requests -------------------------- */
-type MRItem = { _id?: string; material?: any; description: string; category?: string; qty: number; unit: string; notes?: string; issuedQty?: number; orderedQty?: number };
+type MRItem = { id?: string; material?: any; description: string; category?: string; qty: number; unit: string; notes?: string; issuedQty?: number; orderedQty?: number };
 
-function MRDrawer({ open, onClose, project, onSaved }: { open: boolean; onClose: () => void; project?: string; onSaved: () => void }) {
+function MRDrawer({ open, onClose, project, record, onSaved }: { open: boolean; onClose: () => void; project?: string; record?: any; onSaved: () => void }) {
   const toast = useToast();
   const [proj, setProj] = useState<string | null>(project ?? null);
   const [trade, setTrade] = useState("");
@@ -29,20 +29,37 @@ function MRDrawer({ open, onClose, project, onSaved }: { open: boolean; onClose:
   const [items, setItems] = useState<MRItem[]>([]);
   const [saving, setSaving] = useState(false);
   useEffect(() => {
-    if (open) {
+    if (!open) return;
+    if (record) {
+      setProj(record.project?.id ?? null);
+      setItems(record.items.map((i: any) => ({ id: i.id, material: i.material, description: i.description, category: i.category, qty: i.qty, unit: i.unit, notes: i.notes })));
+      setTrade(record.trade ?? "");
+      setNotes(record.notes ?? "");
+      setPriority(record.priority ?? "normal");
+      setRequiredBy(toInputDate(record.requiredBy));
+    } else {
       setProj(project ?? null);
       setItems([{ description: "", qty: 1, unit: "nos" }]);
       setTrade("");
       setNotes("");
+      setPriority("normal");
       setRequiredBy(toInputDate(new Date(Date.now() + 2 * 86400000)));
     }
-  }, [open, project]);
+  }, [open, project, record]);
   const set = (i: number, p: Partial<MRItem>) => setItems((l) => l.map((x, k) => (k === i ? { ...x, ...p } : x)));
   const save = async () => {
     setSaving(true);
     try {
-      await api.post("/material-requests", { project: proj, trade: trade || undefined, requiredBy: requiredBy || null, priority, notes, items: items.filter((i) => i.description.trim()) });
-      toast.success("Material request sent");
+      const body = {
+        trade: trade || undefined,
+        requiredBy: requiredBy || null,
+        priority,
+        notes,
+        items: items.filter((i) => i.description.trim()).map((i) => ({ ...i, material: i.material?.id ?? i.material ?? null })),
+      };
+      if (record) await api.patch(`/material-requests/${record.id}`, body);
+      else await api.post("/material-requests", { ...body, project: proj });
+      toast.success(record ? "Request updated" : "Material request sent");
       onSaved();
       onClose();
     } catch (e) {
@@ -52,10 +69,10 @@ function MRDrawer({ open, onClose, project, onSaved }: { open: boolean; onClose:
     }
   };
   return (
-    <Drawer open={open} onClose={onClose} width="max-w-3xl" title="Material request (from site)" footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={saving} onClick={save}>Send request</Button></>}>
+    <Drawer open={open} onClose={onClose} width="max-w-3xl" title={record ? `Edit ${record.mrNo}` : "Material request (from site)"} footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={saving} onClick={save}>{record ? "Save changes" : "Send request"}</Button></>}>
       <div className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
-          {!project && <div className="sm:col-span-2"><label className="label">Site *</label><EntitySelect value={proj} onChange={setProj} config={REF.activeProject} /></div>}
+          {!project && !record && <div className="sm:col-span-2"><label className="label">Site *</label><EntitySelect value={proj} onChange={setProj} config={REF.activeProject} /></div>}
           <div>
             <label className="label">For work</label>
             <select className="input" value={trade} onChange={(e) => setTrade(e.target.value)}>
@@ -138,9 +155,22 @@ function IssueModal({ open, onClose, project, mr, mode = "issue", onDone }: { op
 function MRDetail({ id, onClose, onChanged }: { id: string | null; onClose: () => void; onChanged: () => void }) {
   const router = useRouter();
   const toast = useToast();
+  const confirm = useConfirm();
   const { can } = useAuth();
   const { data: mr, mutate } = useOne<any>(id ? `/material-requests/${id}` : null);
   const [issue, setIssue] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const remove = async () => {
+    if (!(await confirm({ title: `Delete ${mr.mrNo}?`, danger: true, confirmText: "Delete" }))) return;
+    try {
+      await api.del(`/material-requests/${mr.id}`);
+      toast.success("Request deleted");
+      onChanged();
+      onClose();
+    } catch (e) {
+      toast.error(e);
+    }
+  };
   const decide = async (action: "approve" | "reject") => {
     const reason = action === "reject" ? window.prompt("Reason for rejection?") ?? "" : "";
     try {
@@ -191,10 +221,17 @@ function MRDetail({ id, onClose, onChanged }: { id: string | null; onClose: () =
             {["approved", "issued"].includes(mr.status) && can("purchase_orders:write") && (
               <Button icon={<ShoppingCart className="size-4" />} onClick={() => router.push(`/procurement/orders/new?mr=${mr.id}`)}>Create purchase order</Button>
             )}
+            {mr.status === "pending" && can("material_requests:write") && (
+              <Button variant="secondary" onClick={() => setEditing(true)}>Edit request</Button>
+            )}
+            {["pending", "rejected"].includes(mr.status) && can("material_requests:delete") && (
+              <Button variant="ghost" className="text-red-600" icon={<Trash2 className="size-4" />} onClick={remove}>Delete</Button>
+            )}
           </div>
         </div>
       )}
       <IssueModal open={issue} onClose={() => setIssue(false)} mr={mr} onDone={() => (mutate(), onChanged())} />
+      <MRDrawer open={editing} onClose={() => setEditing(false)} record={mr} onSaved={() => (mutate(), onChanged())} />
     </Drawer>
   );
 }
@@ -520,12 +557,57 @@ export function PurchaseOrderDetail({ params }: { params: Promise<{ id: string }
 }
 
 /* ---------------------------------- GRN ---------------------------------- */
+function GRNDetail({ id, onClose }: { id: string | null; onClose: () => void }) {
+  const { data: g } = useOne<any>(id ? `/grn/${id}` : null);
+  return (
+    <Drawer open={!!id} onClose={onClose} width="max-w-3xl" title={g ? `${g.grnNo} – ${g.vendor?.name ?? ""}` : "Goods receipt"} subtitle={g && <span>Received {dateTime(g.receivedAt)} by {g.receivedBy?.name}</span>}>
+      {!g ? <Loading /> : (
+        <div className="space-y-5">
+          <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <KV label="Against PO">{g.purchaseOrder ? <Link className="text-brand-700 hover:underline" href={`/procurement/orders/${g.purchaseOrder.id}`}>{g.purchaseOrder.poNo}</Link> : "Direct"}</KV>
+            <KV label="Received at">{g.location === "factory" ? "Factory / store" : <ProjectLink project={g.project} />}</KV>
+            <KV label="Category">{labelOf(MATERIAL_CATEGORIES, g.category)}</KV>
+            <KV label="Vehicle">{g.vehicleNo}</KV>
+            <KV label="Vendor bill no.">{g.vendorInvoiceNo}</KV>
+            <KV label="Bill amount">{g.vendorInvoiceAmount ? money(g.vendorInvoiceAmount) : ""}</KV>
+          </dl>
+          <table className="w-full text-sm">
+            <thead className="border-b border-line text-left text-[11px] uppercase text-stone-500"><tr><th className="py-2">Item</th><th className="text-right">Ordered</th><th className="text-right">Received</th><th className="text-right">Rejected</th><th className="text-right">Accepted</th></tr></thead>
+            <tbody>
+              {g.items.map((i: any) => (
+                <tr key={i.id} className="border-b border-line">
+                  <td className="py-2">{i.description}{i.remarks && <span className="block text-xs text-muted">{i.remarks}</span>}</td>
+                  <td className="text-right">{i.orderedQty != null ? number(i.orderedQty) : "—"}</td>
+                  <td className="text-right">{number(i.receivedQty)}</td>
+                  <td className={cx("text-right", i.rejectedQty > 0 && "text-red-600")}>{number(i.rejectedQty ?? 0)}</td>
+                  <td className="text-right font-semibold">{number(i.receivedQty - (i.rejectedQty ?? 0))} {i.unit}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {g.notes && <p className="text-sm text-stone-600">{g.notes}</p>}
+          {g.photos?.length > 0 && (
+            <div>
+              <h4 className="mb-2 text-sm font-semibold">Challan / bill / material photos</h4>
+              <FileGrid files={g.photos} />
+            </div>
+          )}
+        </div>
+      )}
+    </Drawer>
+  );
+}
+
 export function GRNView({ project }: { project?: string }) {
   const toast = useToast();
   const confirm = useConfirm();
   const { can } = useAuth();
+  const [open, setOpen] = useState<string | null>(null);
   return (
+    <>
+    <GRNDetail id={open} onClose={() => setOpen(null)} />
     <ResourcePage
+      onRowClick={(r) => setOpen(r.id)}
       title={project ? undefined : "Goods receipt notes (GRN)"}
       subtitle="Every delivery received at factory or site, category-wise"
       embedded={!!project}
@@ -566,6 +648,7 @@ export function GRNView({ project }: { project?: string }) {
           : undefined
       }
     />
+    </>
   );
 }
 

@@ -26,6 +26,20 @@ const drFields: Field[] = [
 
 function DailyReportDrawer({ open, onClose, record, project, onSaved }: { open: boolean; onClose: () => void; record?: any; project?: string; onSaved?: () => void }) {
   const toast = useToast();
+  const confirm = useConfirm();
+  const { can } = useAuth();
+  const remove = async () => {
+    if (!(await confirm({ title: "Delete this daily report?", danger: true, confirmText: "Delete" }))) return;
+    try {
+      await api.del(`/daily-reports/${record.id}`);
+      toast.success("Report deleted");
+      invalidate("/daily-reports", "/projects");
+      onSaved?.();
+      onClose();
+    } catch (e) {
+      toast.error(e);
+    }
+  };
   const f = useFormState({});
   const [proj, setProj] = useState<string | null>(null);
   const [manpower, setManpower] = useState<any[]>([]);
@@ -61,7 +75,7 @@ function DailyReportDrawer({ open, onClose, record, project, onSaved }: { open: 
     }
   };
   return (
-    <Drawer open={open} onClose={onClose} width="max-w-3xl" title={record ? "Edit daily report" : "Daily site report"} footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={saving} onClick={save}>Submit report</Button></>}>
+    <Drawer open={open} onClose={onClose} width="max-w-3xl" title={record ? "Edit daily report" : "Daily site report"} footer={<>{record?.id && can("daily_reports:delete") && <Button variant="ghost" className="mr-auto text-red-600" icon={<Trash2 className="size-4" />} onClick={remove}>Delete</Button>}<Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={saving} onClick={save}>Submit report</Button></>}>
       <div className="space-y-5">
         {!project && !record && (
           <div>
@@ -167,7 +181,27 @@ function ChecklistCard({ c, reload }: { c: any; reload: () => void }) {
   const confirm = useConfirm();
   const { can } = useAuth();
   const [items, setItems] = useState<any[]>(c.items);
+  const [newItem, setNewItem] = useState("");
   useEffect(() => setItems(c.items), [c.items]);
+  const addItem = async () => {
+    if (!newItem.trim()) return;
+    try {
+      await api.post(`/checklists/${c.id}/items`, { text: newItem.trim() });
+      setNewItem("");
+      reload();
+    } catch (e) {
+      toast.error(e);
+    }
+  };
+  const removeItem = async (it: any) => {
+    if (!(await confirm({ title: "Remove this check?", message: it.text, danger: true, confirmText: "Remove" }))) return;
+    try {
+      await api.del(`/checklists/${c.id}/items/${it.id}`);
+      reload();
+    } catch (e) {
+      toast.error(e);
+    }
+  };
   const done = items.filter((i) => i.checked).length;
   const toggle = async (it: any) => {
     setItems((l) => l.map((x) => (x.id === it.id ? { ...x, checked: !x.checked } : x)));
@@ -203,16 +237,27 @@ function ChecklistCard({ c, reload }: { c: any; reload: () => void }) {
       <ul className="space-y-0.5">
         {items.map((it) => (
           <li key={it.id}>
-            <label className="flex cursor-pointer items-start gap-2.5 rounded-lg px-2 py-1.5 hover:bg-stone-50">
+            <label className="group flex cursor-pointer items-start gap-2.5 rounded-lg px-2 py-1.5 hover:bg-stone-50">
               <input type="checkbox" className="mt-0.5 size-4 accent-emerald-600" checked={!!it.checked} disabled={!can("checklists:write")} onChange={() => toggle(it)} />
               <span className="flex-1">
                 <span className={cx("text-sm", it.checked && "text-stone-400 line-through")}>{it.text}</span>
                 {it.checked && it.checkedBy && <span className="block text-[10px] text-muted">✓ {it.checkedBy.name ?? ""} · {dateTime(it.checkedAt)}</span>}
               </span>
+              {can("checklists:write") && !it.checked && (
+                <button type="button" className="text-stone-300 opacity-0 transition group-hover:opacity-100 hover:text-red-600" title="Remove check" onClick={(e) => (e.preventDefault(), removeItem(it))}>
+                  <Trash2 className="size-3.5" />
+                </button>
+              )}
             </label>
           </li>
         ))}
       </ul>
+      {can("checklists:write") && (
+        <div className="mt-2 flex gap-2">
+          <input className="input py-1.5" placeholder="Add a site-specific check…" value={newItem} onChange={(e) => setNewItem(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
+          <Button size="sm" variant="secondary" icon={<Plus className="size-3.5" />} onClick={addItem}>Add</Button>
+        </div>
+      )}
       {c.assignedTo && <p className="mt-2 text-xs text-muted">Responsible: {c.assignedTo.name}</p>}
     </Card>
   );
@@ -261,6 +306,7 @@ function TemplateEditor({ open, onClose, record, onSaved }: { open: boolean; onC
 export function ChecklistsView({ project }: { project?: string }) {
   const { can } = useAuth();
   const toast = useToast();
+  const confirm = useConfirm();
   const [view, setView] = useState<"site" | "templates">(project ? "site" : "site");
   const [filterProject, setFilterProject] = useState<string | null>(null);
   const site = useList(view === "site" ? "/checklists" : null, { isTemplate: false, project: project ?? filterProject ?? undefined, limit: 100 });
@@ -313,7 +359,7 @@ export function ChecklistsView({ project }: { project?: string }) {
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {templates.rows.map((t) => (
-            <Card key={t.id} title={t.name} action={can("checklists:write") && <span className="flex gap-1"><Button size="xs" variant="ghost" onClick={() => setEditTpl(t)}>Edit</Button><Button size="xs" variant="ghost" icon={<Copy className="size-3.5" />} onClick={() => (setTpl(t.id), setView("site"), setApply(true))}>Use</Button></span>}>
+            <Card key={t.id} title={t.name} action={can("checklists:write") && <span className="flex gap-1">{can("checklists:delete") && <Button size="xs" variant="ghost" className="text-red-600" onClick={async () => (await confirm({ title: `Delete template "${t.name}"?`, message: "Site checklists already created from it are not affected.", danger: true, confirmText: "Delete" })) && api.del(`/checklists/${t.id}`).then(() => templates.mutate()).catch(toast.error)}>Delete</Button>}<Button size="xs" variant="ghost" onClick={() => setEditTpl(t)}>Edit</Button><Button size="xs" variant="ghost" icon={<Copy className="size-3.5" />} onClick={() => (setTpl(t.id), setView("site"), setApply(true))}>Use</Button></span>}>
               {t.trade && <Badge className="mb-2">{labelOf(TRADES, t.trade)}</Badge>}
               <ul className="list-disc space-y-0.5 pl-4 text-sm text-stone-600">
                 {t.items.map((i: any) => <li key={i.id}>{i.text}</li>)}

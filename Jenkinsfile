@@ -30,8 +30,11 @@ pipeline {
         CONTAINER_NAME = 'lavista'
         HOST_PORT      = '4044'            // port opened on the server
         APP_PORT       = '4044'            // port inside the container (matches Dockerfile PORT)
-        UPLOADS_VOLUME = 'lavista-uploads' // persistent site photos / drawings / bills
         KEEP_IMAGES    = '3'               // older image tags kept for rollback
+
+        // ---------------- Uploads (site photos, drawings, renders, bills) ----------------
+        UPLOADS_HOST_DIR = '/var/lib/lavista/uploads' // folder on the server – survives redeploys, back this up
+        UPLOAD_DIR       = '/app/storage/uploads'     // same folder as seen inside the container
 
         // ---------------- Secrets & app config (single source of truth) ----------------
         // Database – URL-encode special characters in the password: ! %21   # %23   @ %40
@@ -98,6 +101,16 @@ pipeline {
                 // "-e NAME" (without =value) copies the value from the environment block,
                 // so secrets are never printed in the console log.
                 sh '''
+                    # Upload folder on the server, writable by the app user (uid 1001) inside the container.
+                    # Done through a throw-away container so Jenkins needs no sudo.
+                    docker run --rm -v "$(dirname ${UPLOADS_HOST_DIR})":/host alpine:3 sh -c \
+                      "mkdir -p /host/$(basename ${UPLOADS_HOST_DIR}) && chown -R 1001:1001 /host/$(basename ${UPLOADS_HOST_DIR})"
+                    # One-time move of files from the old named volume (earlier pipeline version); harmless if repeated.
+                    if docker volume inspect lavista-uploads > /dev/null 2>&1; then
+                      docker run --rm -v lavista-uploads:/from -v ${UPLOADS_HOST_DIR}:/to alpine:3 sh -c \
+                        "cp -an /from/. /to/ 2>/dev/null; chown -R 1001:1001 /to" || true
+                    fi
+
                     docker stop ${CONTAINER_NAME} || true
                     docker rm ${CONTAINER_NAME} || true
                     docker run -d --name ${CONTAINER_NAME} \
@@ -105,7 +118,7 @@ pipeline {
                       -e NODE_ENV=production \
                       -e PORT=${APP_PORT} \
                       -e HOSTNAME=0.0.0.0 \
-                      -e UPLOAD_DIR=/app/storage/uploads \
+                      -e UPLOAD_DIR \
                       -e MONGODB_URI \
                       -e JWT_ACCESS_SECRET \
                       -e ACCESS_TOKEN_TTL_MIN \
@@ -119,7 +132,7 @@ pipeline {
                       -e META_VERIFY_TOKEN \
                       -e META_APP_SECRET \
                       -e META_PAGE_ACCESS_TOKEN \
-                      -v ${UPLOADS_VOLUME}:/app/storage/uploads \
+                      -v ${UPLOADS_HOST_DIR}:${UPLOAD_DIR} \
                       --add-host=host.docker.internal:host-gateway \
                       --restart unless-stopped \
                       ${IMAGE_NAME}:${BUILD_NUMBER}

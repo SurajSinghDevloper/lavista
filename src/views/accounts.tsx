@@ -1,19 +1,19 @@
 "use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { ArrowLeft, LayoutGrid, Plus, Printer, Save, Send, Table2, Trash2, XCircle } from "lucide-react";
+import { ArrowLeft, LayoutGrid, MessageCircle, Plus, Printer, Save, Send, Table2, Trash2, XCircle } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { use, useEffect, useState } from "react";
 import { useAuth } from "@/components/auth";
 import { DataTable, ResourcePage } from "@/components/data-table";
-import { LineItemsEditor, ProjectLink, REF, Totals, emptyItem, type LineItem } from "@/components/domain";
+import { LineItemsEditor, ProjectLink, REF, Totals, emptyItem, useCompany, type LineItem } from "@/components/domain";
 import { EntitySelect, FormDrawer } from "@/components/form";
 import { Button, Card, Empty, KV, Loading, MenuItem, PageHeader, Progress, Segmented, StatCard, StatusBadge, Tabs, cx, useConfirm, useToast } from "@/components/ui";
 import { invalidate, useList, useOne } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { EXPENSE_CATEGORIES, INVOICE_STATUS, INVOICE_TYPES, MILESTONE_STATUS, PAYMENT_MODES, PROJECT_STAGES, RECEIPT_TYPES } from "@/lib/constants";
-import { date, money, moneyShort, toInputDate } from "@/lib/format";
+import { date, money, moneyShort, toInputDate, waLink } from "@/lib/format";
 import { expenseColumns, expenseFields, paymentColumns, paymentFields } from "./config";
 
 /* --------------------------- Site-wise accounts -------------------------- */
@@ -41,13 +41,17 @@ export function AccountsPage() {
           </>
         }
       />
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <StatCard label="Contract value" value={moneyShort(t.contractValue)} />
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
+        <StatCard label="Contract value" value={moneyShort(t.contractValue)} hint={`Billed ${moneyShort(t.invoiced)}`} />
         <StatCard label="Received (A)" value={moneyShort(t.received)} tone="good" />
-        <StatCard label="Spent on sites (B)" value={moneyShort(t.spent)} tone="bad" />
+        <StatCard label="Site cost (B)" value={moneyShort(t.cost)} tone="bad" hint={`Cash ${moneyShort(t.spent)} + factory material ${moneyShort(t.materialFromStock)}`} />
         <StatCard label="Balance (C = A − B)" value={moneyShort(t.balance)} tone={t.balance >= 0 ? "brand" : "bad"} />
-        <StatCard label="Client outstanding" value={moneyShort(t.outstanding)} tone="warn" hint={`Office overheads ${moneyShort(t.officeOverheads)}`} />
+        <StatCard label="Client outstanding" value={moneyShort(t.outstanding)} tone="warn" />
+        <StatCard label="Office overheads" value={moneyShort(t.officeOverheads)} hint={`Factory stock bought ${moneyShort(t.factoryPurchases)}`} />
       </div>
+      <p className="-mt-2 text-xs text-muted">
+        B = expenses paid for the site + material issued to it from factory stock (at average cost). Factory stock purchases are not overheads – their cost reaches each site when the material is issued.
+      </p>
 
       {sites.length === 0 ? (
         <Empty title="No sites" />
@@ -66,11 +70,11 @@ export function AccountsPage() {
                 </div>
                 <div className="mt-4 grid grid-cols-3 gap-2 text-center">
                   <div className="rounded-lg bg-emerald-50 py-2"><p className="text-[10px] font-semibold uppercase text-emerald-700">A · Received</p><p className="text-sm font-semibold">{moneyShort(s.received)}</p></div>
-                  <div className="rounded-lg bg-rose-50 py-2"><p className="text-[10px] font-semibold uppercase text-rose-700">B · Spent</p><p className="text-sm font-semibold">{moneyShort(s.spent)}</p></div>
+                  <div className="rounded-lg bg-rose-50 py-2" title={`Cash ${money(s.spent)} + factory material ${money(s.materialFromStock)}`}><p className="text-[10px] font-semibold uppercase text-rose-700">B · Cost</p><p className="text-sm font-semibold">{moneyShort(s.cost)}</p></div>
                   <div className={cx("rounded-lg py-2", s.balance >= 0 ? "bg-brand-50" : "bg-red-100")}><p className="text-[10px] font-semibold uppercase text-brand-700">C · Balance</p><p className={cx("text-sm font-semibold", s.balance < 0 && "text-red-700")}>{moneyShort(s.balance)}</p></div>
                 </div>
                 <div className="mt-4">
-                  <div className="mb-1 flex justify-between text-xs text-muted"><span>Collected {Math.round(pct)}% of {moneyShort(s.contractValue)}</span><span>Due {moneyShort(Math.max(0, s.outstanding))}</span></div>
+                  <div className="mb-1 flex justify-between text-xs text-muted"><span>Collected {Math.round(pct)}% of {moneyShort(s.contractValue)}</span><span>{s.outstanding < 0 ? `Excess ${moneyShort(-s.outstanding)}` : `Due ${moneyShort(s.outstanding)}`}</span></div>
                   <Progress value={pct} tone="bg-emerald-500" />
                 </div>
                 {s.nextMilestone && <p className="mt-3 rounded bg-amber-50 px-2 py-1 text-xs text-amber-800">Next due: {s.nextMilestone.name} – {money(s.nextMilestone.amount)}</p>}
@@ -88,7 +92,9 @@ export function AccountsPage() {
               { key: "contractValue", label: "Contract", render: (r) => money(r.contractValue), align: "right" },
               { key: "invoiced", label: "Billed", render: (r) => money(r.invoiced), align: "right" },
               { key: "received", label: "Received (A)", render: (r) => <span className="text-emerald-700">{money(r.received)}</span>, align: "right" },
-              { key: "spent", label: "Spent (B)", render: (r) => <span className="text-rose-700">{money(r.spent)}</span>, align: "right" },
+              { key: "spent", label: "Cash spent", render: (r) => money(r.spent), align: "right", hideOnMobile: true },
+              { key: "materialFromStock", label: "Factory material", render: (r) => money(r.materialFromStock), align: "right", hideOnMobile: true },
+              { key: "cost", label: "Cost (B)", render: (r) => <span className="text-rose-700">{money(r.cost)}</span>, align: "right" },
               { key: "balance", label: "Balance (C)", render: (r) => <strong className={r.balance < 0 ? "text-red-700" : ""}>{money(r.balance)}</strong>, align: "right" },
               { key: "outstanding", label: "Outstanding", render: (r) => money(r.outstanding), align: "right" },
               { key: "lastPaymentAt", label: "Last payment", render: (r) => date(r.lastPaymentAt), hideOnMobile: true },
@@ -102,6 +108,9 @@ export function AccountsPage() {
 
 /* ------------------------------- Receipts -------------------------------- */
 export function PaymentsView({ project }: { project?: string }) {
+  const { company } = useCompany();
+  const receiptText = (r: any) =>
+    `Dear ${r.client?.name ?? "Sir/Madam"}, we have received ${money(r.amount)} on ${date(r.date)} towards ${r.project?.name ?? "your project"} (receipt ${r.receiptNo}). Thank you – ${company.name || "LA-VISTA"}.`;
   return (
     <ResourcePage
       title={project ? undefined : "Payments received"}
@@ -118,7 +127,16 @@ export function PaymentsView({ project }: { project?: string }) {
       filters={[{ name: "type", label: "Against", options: RECEIPT_TYPES }, { name: "mode", label: "Mode", options: PAYMENT_MODES }, ...(project ? [] : [{ name: "project", label: "Site", ref: REF.project }])]}
       createLabel="Record payment"
       invalidates={["/projects", "/accounts", "/invoices", "/dashboard"]}
-      rowMenu={(r) => <MenuItem icon={<Printer className="size-4" />} onClick={() => window.open(`/print/receipt/${r.id}`, "_blank")}>Print receipt</MenuItem>}
+      rowMenu={(r) => (
+        <>
+          <MenuItem icon={<Printer className="size-4" />} onClick={() => window.open(`/print/receipt/${r.id}`, "_blank")}>Print receipt</MenuItem>
+          {r.client?.phone && (
+            <MenuItem icon={<MessageCircle className="size-4" />} onClick={() => window.open(waLink(r.client.phone, receiptText(r)), "_blank", "noopener")}>
+              Send receipt on WhatsApp
+            </MenuItem>
+          )}
+        </>
+      )}
     />
   );
 }
@@ -204,8 +222,12 @@ function InvoiceEditor({ initial }: { initial: any }) {
   const disc = Math.min(Number(inv.discountAmount) || 0, subtotal);
   const ratio = subtotal ? (subtotal - disc) / subtotal : 0;
   const tax = inv.items.reduce((s: number, i: LineItem) => s + (i.qty * i.rate * ratio * (i.gstRate ?? 0)) / 100, 0);
-  const total = subtotal - disc + tax;
+  const exact = Math.round((subtotal - disc + tax) * 100) / 100;
+  const total = Math.round(exact); // same rule as the server: bills round to the nearest rupee
+  const roundOff = total - exact;
   const { rows: pays } = useList(inv.id ? "/payments" : null, { invoice: inv.id, limit: 50 });
+  const { company } = useCompany();
+  const shareText = `Dear ${inv.client?.name ?? "Sir/Madam"}, please find ${inv.invoiceNo} for ${inv.project?.name ?? "your project"}: ${money(total)}${inv.amountPaid ? `, received ${money(inv.amountPaid)}, balance ${money(total - inv.amountPaid)}` : ""}${inv.dueDate ? `, due by ${date(inv.dueDate)}` : ""}. – ${company.name || "LA-VISTA"}`;
 
   const save = async () => {
     setSaving(true);
@@ -252,6 +274,11 @@ function InvoiceEditor({ initial }: { initial: any }) {
         actions={
           <>
             {inv.id && <Button variant="secondary" icon={<Printer className="size-4" />} onClick={() => window.open(`/print/invoice/${inv.id}`, "_blank")}>Print / PDF</Button>}
+            {inv.id && inv.client?.phone && inv.status !== "draft" && (
+              <Button variant="secondary" icon={<MessageCircle className="size-4" />} onClick={() => window.open(waLink(inv.client.phone, shareText), "_blank", "noopener")}>
+                WhatsApp
+              </Button>
+            )}
             {inv.id && inv.status === "draft" && can("invoices:write") && <Button variant="secondary" icon={<Send className="size-4" />} onClick={() => setStatus("issued")}>Issue bill</Button>}
             {inv.id && ["draft", "issued"].includes(inv.status) && can("invoices:write") && <Button variant="ghost" className="text-red-600" icon={<XCircle className="size-4" />} onClick={() => setStatus("cancelled")}>Cancel</Button>}
             {!locked && can("invoices:write") && <Button icon={<Save className="size-4" />} loading={saving} onClick={save}>Save</Button>}
@@ -285,6 +312,7 @@ function InvoiceEditor({ initial }: { initial: any }) {
               { label: "Discount", value: -disc, hidden: !disc },
               { label: inv.interState ? "IGST" : "CGST", value: inv.interState ? tax : tax / 2 },
               { label: "SGST", value: tax / 2, hidden: !!inv.interState },
+              { label: "Round off", value: roundOff, hidden: Math.abs(roundOff) < 0.005 },
               { label: "Total", value: total, strong: true },
               { label: "Received", value: inv.amountPaid, hidden: !inv.amountPaid },
               { label: "Balance due", value: total - (inv.amountPaid ?? 0), hidden: !inv.amountPaid, strong: true },
@@ -381,7 +409,7 @@ export function FinancePanel({ project, summary, reload }: { project: any; summa
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <StatCard label="Contract value" value={money(summary?.contractValue)} />
         <StatCard label="Received (A)" value={money(f.received)} tone="good" />
-        <StatCard label="Spent (B)" value={money(f.spent)} tone="bad" hint={f.siteMaterialValue ? `+ ${money(f.siteMaterialValue)} stock issued` : undefined} />
+        <StatCard label="Site cost (B)" value={money(f.cost)} tone="bad" hint={`Cash ${money(f.spent)} + factory material ${money(f.materialFromStock)}`} />
         <StatCard label="Balance (C)" value={money(f.balance)} tone={f.balance >= 0 ? "brand" : "bad"} />
         <StatCard label="Client outstanding" value={money(summary?.outstanding)} tone="warn" hint={`Billed ${money(f.invoiced)}`} />
       </div>
@@ -393,7 +421,7 @@ export function FinancePanel({ project, summary, reload }: { project: any; summa
               <KV label="Purchase orders">{money(f.poValue)}</KV>
               <KV label="Contractor work orders">{money(f.woValue)}</KV>
               <KV label="Internal budget">{money(summary?.budget)}</KV>
-              <KV label="Budget used">{summary?.budget ? `${Math.round(((f.spent + (f.siteMaterialValue ?? 0)) / summary.budget) * 100)}%` : "—"}</KV>
+              <KV label="Budget used">{summary?.budget ? `${Math.round((f.cost / summary.budget) * 100)}%` : "—"}</KV>
             </dl>
           </Card>
         </div>

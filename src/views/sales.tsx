@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { use, useEffect, useState } from "react";
 import { useAuth } from "@/components/auth";
-import { DataTable, FilterBar, Pagination, ResourcePage, SearchBox } from "@/components/data-table";
+import { DataTable, ExportButton, FilterBar, Pagination, ResourcePage, SearchBox, exportCsv } from "@/components/data-table";
 import { ActivityFeed, Attachments, FileLibrary, Person, ProjectLink, REF } from "@/components/domain";
 import { EntitySelect, FormDrawer, FormGrid, errorsFrom, toPayload, useFormState, type Field } from "@/components/form";
 import { Badge, Button, Card, Drawer, Empty, KV, Loading, Modal, PageHeader, Segmented, StatusBadge, Tabs, cx, useConfirm, useToast } from "@/components/ui";
@@ -125,6 +125,30 @@ export function LeadsPage() {
         actions={
           <>
             <Segmented options={[{ value: "list", label: "List" }, { value: "board", label: "Pipeline" }]} value={view} onChange={setView} />
+            <ExportButton
+              onExport={() =>
+                exportCsv(
+                  "/leads",
+                  { q, ...filters },
+                  [
+                    { key: "leadNo", label: "Lead no" },
+                    { key: "name", label: "Name" },
+                    { key: "phone", label: "Phone" },
+                    { key: "email", label: "Email" },
+                    { key: "city", label: "City" },
+                    { key: "propertyType", label: "Property", csv: (r) => [labelOf(PROPERTY_CONFIGS, r.propertyConfig), labelOf(PROPERTY_TYPES, r.propertyType)].filter(Boolean).join(" ") },
+                    { key: "budget", label: "Budget" },
+                    { key: "source", label: "Source", csv: (r) => labelOf(LEAD_SOURCES, r.source) },
+                    { key: "status", label: "Status", csv: (r) => labelOf(LEAD_STATUS, r.status) },
+                    { key: "priority", label: "Priority", csv: (r) => labelOf(LEAD_PRIORITY, r.priority) },
+                    { key: "assignedTo", label: "Owner" },
+                    { key: "nextFollowUpAt", label: "Next follow-up" },
+                    { key: "createdAt", label: "Created" },
+                  ],
+                  "leads"
+                )
+              }
+            />
             {can("leads:write") && (
               <Button icon={<Plus className="size-4" />} onClick={() => setCreating(true)}>
                 New lead
@@ -153,6 +177,7 @@ export function LeadsPage() {
 /* ------------------------------ Follow-up panel -------------------------- */
 function FollowUpPanel({ lead, project }: { lead?: string; project?: string }) {
   const toast = useToast();
+  const confirm = useConfirm();
   const { can } = useAuth();
   const { rows, mutate } = useList("/followups", { lead, project, limit: 100, sort: "-scheduledAt" });
   const [editing, setEditing] = useState<any>(null);
@@ -207,6 +232,24 @@ function FollowUpPanel({ lead, project }: { lead?: string; project?: string }) {
                     Edit
                   </Button>
                 </div>
+              )}
+              {can("followups:delete") && (
+                <button
+                  className="rounded p-1 text-stone-300 hover:text-red-600"
+                  title="Delete follow-up"
+                  onClick={async () => {
+                    if (!(await confirm({ title: "Delete this follow-up?", danger: true, confirmText: "Delete" }))) return;
+                    try {
+                      await api.del(`/followups/${f.id}`);
+                      mutate();
+                      invalidate("/leads");
+                    } catch (e) {
+                      toast.error(e);
+                    }
+                  }}
+                >
+                  <Trash2 className="size-4" />
+                </button>
               )}
             </li>
           ))}
@@ -303,6 +346,20 @@ function MeasurementsEditor({ rows, onChange }: { rows: M[]; onChange: (r: M[]) 
 
 export function SiteVisitDrawer({ open, onClose, record, lead, project, address, onSaved }: { open: boolean; onClose: () => void; record?: any; lead?: string; project?: string; address?: string; onSaved?: () => void }) {
   const toast = useToast();
+  const confirm = useConfirm();
+  const { can } = useAuth();
+  const remove = async () => {
+    if (!(await confirm({ title: "Delete this site visit?", message: "Measurements recorded in it are deleted too. Uploaded photos stay in Files.", danger: true, confirmText: "Delete" }))) return;
+    try {
+      await api.del(`/site-visits/${record.id}`);
+      toast.success("Site visit deleted");
+      invalidate("/site-visits", "/leads");
+      onSaved?.();
+      onClose();
+    } catch (e) {
+      toast.error(e);
+    }
+  };
   const fields: Field[] = [
     { name: "scheduledAt", label: "Visit date & time", type: "datetime", required: true },
     { name: "status", label: "Status", type: "select", options: SITE_VISIT_STATUS },
@@ -354,6 +411,11 @@ export function SiteVisitDrawer({ open, onClose, record, lead, project, address,
       title={record ? "Site visit & measurements" : "Schedule site visit"}
       footer={
         <>
+          {record?.id && can("site_visits:delete") && (
+            <Button variant="ghost" className="mr-auto text-red-600" icon={<Trash2 className="size-4" />} onClick={remove}>
+              Delete
+            </Button>
+          )}
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
           <Button loading={saving} onClick={save}>Save</Button>
         </>

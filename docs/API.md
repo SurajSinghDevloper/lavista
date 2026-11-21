@@ -120,6 +120,7 @@ Standard CRUD: `GET /x`, `POST /x`, `GET /x/:id`, `PATCH /x/:id` (partial), `DEL
 | `/checklists` CRUD | `isTemplate=true` for templates |
 | `POST /checklists/:id/apply` | `{ project, assignedTo }` – template → site |
 | `PATCH /checklists/:id/items/:itemId` | `{ checked, remark, photo }` |
+| `POST /checklists/:id/items` · `DELETE /checklists/:id/items/:itemId` | add `{ text }` / remove a site-specific check (other ticks keep who/when) |
 | `/contractors`, `/work-orders` CRUD | work order `paidAmount` follows expenses |
 
 ### Procurement & stock
@@ -137,9 +138,9 @@ Standard CRUD: `GET /x`, `POST /x`, `GET /x/:id`, `PATCH /x/:id` (partial), `DEL
 | Method & path | Notes |
 | --- | --- |
 | `/payments` CRUD | client receipts; updates invoice & milestone status |
-| `/invoices` CRUD · `POST /:id/status` | GST split CGST/SGST or IGST (`interState`) |
+| `/invoices` CRUD · `POST /:id/status` | GST split CGST/SGST or IGST (`interState`); `total` rounded to the rupee, difference in `roundOff` |
 | `/expenses` CRUD | link `purchaseOrder` / `workOrder` to update paid amounts |
-| `GET /accounts/summary` | site-wise Received (A) − Spent (B) = Balance (C) |
+| `GET /accounts/summary` | per site: `received` (A), `spent` (cash), `materialFromStock`, `cost` (B = spent + materialFromStock), `balance` (C), `outstanding`, `invoiced`; totals add `officeOverheads`, `factoryPurchases` |
 | `GET /accounts/payables` | vendor & contractor dues |
 
 ### Team & system
@@ -149,11 +150,11 @@ Standard CRUD: `GET /x`, `POST /x`, `GET /x/:id`, `PATCH /x/:id` (partial), `DEL
 | `GET /users/lookup?role=` | lightweight list for pickers |
 | `GET /attendance` · `POST /attendance/check-in` · `POST /attendance/check-out` · `GET /attendance/today` | send `{ location: {lat,lng}, project? }` from the phone GPS |
 | `POST /files` (multipart) | fields: `file` (1–20), `category`, `project`, `entityType`, `entityId`, `caption` → returns file records; put ids into `photos[]` / `files[]` |
-| `GET /files?project=&entityType=&entityId=` · `GET /files/:id/download` (`?download=1`) · `DELETE /files/:id` | download needs the Bearer header |
+| `GET /files?project=&entityType=&entityId=` · `GET /files/:id/download` · `PATCH /files/:id` `{caption, category}` · `DELETE /files/:id` | download needs the Bearer header. `?thumb=1` = 480px WebP preview for jpg/png/webp/gif (use in photo grids – originals can be 10 MB), `?download=1` = save-as |
 | `GET /notifications` (`meta.unread`) · `POST /notifications/read` `{ids}|{all:true}` | |
-| `GET /dashboard` · `GET /reports?from=&to=` · `GET /search?q=` · `GET /activity?project=` | |
+| `GET /dashboard` (accounts roles also get `money.dueMilestones`) · `GET /reports?from=&to=` · `GET /search?q=` · `GET /activity?project=` | |
 | `GET /settings` · `PUT /settings/:key` | |
-| `GET /health` | uptime probe |
+| `GET /health` | uptime probe → `{ status, db, uploads }`; HTTP 503 if MongoDB is down or the upload folder isn't writable |
 
 Allowed upload types: jpg, png, webp, gif, heic, pdf, dwg, dxf, skp, xlsx, xls, csv, docx, doc, pptx, zip, rar, mp4, mov, txt (max `MAX_UPLOAD_MB`, default 25 MB). Content is sniffed; renamed executables/HTML are rejected.
 

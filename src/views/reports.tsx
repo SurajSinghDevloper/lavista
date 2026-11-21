@@ -99,7 +99,7 @@ export function ReportsPage() {
             title="Site profitability"
             padded={false}
             action={
-              <Button size="xs" variant="secondary" icon={<Download className="size-3.5" />} onClick={() => csv(data.sites, [{ key: "projectNo", label: "Site no" }, { key: "name", label: "Site" }, { key: "stage", label: "Stage" }, { key: "contractValue", label: "Contract" }, { key: "received", label: "Received" }, { key: "spent", label: "Spent" }, { key: "margin", label: "Margin" }, { key: "marginPct", label: "Margin %" }], "site-profitability")}>
+              <Button size="xs" variant="secondary" icon={<Download className="size-3.5" />} onClick={() => csv(data.sites, [{ key: "projectNo", label: "Site no" }, { key: "name", label: "Site" }, { key: "stage", label: "Stage" }, { key: "contractValue", label: "Contract" }, { key: "received", label: "Received" }, { key: "spent", label: "Cash spent" }, { key: "materialFromStock", label: "Factory material" }, { key: "cost", label: "Cost" }, { key: "margin", label: "Margin" }, { key: "marginPct", label: "Margin %" }], "site-profitability")}>
                 CSV
               </Button>
             }
@@ -113,7 +113,7 @@ export function ReportsPage() {
                 { key: "progress", label: "Progress", render: (r) => <div className="flex w-24 items-center gap-2"><Progress value={r.progress} /><span className="text-xs">{r.progress ?? 0}%</span></div> },
                 { key: "contractValue", label: "Contract", render: (r) => money(r.contractValue), align: "right" },
                 { key: "received", label: "Received", render: (r) => money(r.received), align: "right" },
-                { key: "spent", label: "Spent", render: (r) => money(r.spent), align: "right" },
+                { key: "cost", label: "Cost", render: (r) => <span title={`Cash ${money(r.spent)} + factory material ${money(r.materialFromStock)}`}>{money(r.cost)}</span>, align: "right" },
                 { key: "margin", label: "Margin", render: (r) => <strong className={r.margin < 0 ? "text-red-700" : "text-emerald-700"}>{money(r.margin)}</strong>, align: "right" },
                 { key: "marginPct", label: "%", render: (r) => `${r.marginPct}%`, align: "right" },
               ]}

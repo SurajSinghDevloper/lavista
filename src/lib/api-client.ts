@@ -89,4 +89,6 @@ export function qs(params: Record<string, unknown> = {}) {
   return s ? `?${s}` : "";
 }
 
-export const fileUrl = (id: string, download = false) => `${API}/files/${id}/download${download ? "?download=1" : ""}`;
+/** download=true forces "save as"; thumb=true returns the small WebP preview (images only). */
+export const fileUrl = (id: string, download = false, thumb = false) =>
+  `${API}/files/${id}/download${download ? "?download=1" : thumb ? "?thumb=1" : ""}`;
