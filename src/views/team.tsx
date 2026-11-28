@@ -5,13 +5,12 @@ import { KeyRound, LogOut, MapPin, Monitor, MoreHorizontal, Pencil, Plus, Save, 
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth";
 import { DataTable, ResourcePage } from "@/components/data-table";
-import { REF } from "@/components/domain";
+import { REF, UploadButton } from "@/components/domain";
 import { FormDrawer } from "@/components/form";
 import { Avatar, Badge, Button, Card, Empty, IconButton, KV, LoadError, Loading, Menu, MenuItem, Modal, PageHeader, StatusBadge, Tabs, useConfirm, useToast } from "@/components/ui";
 import { invalidate, useList, useOne } from "@/hooks/use-api";
-import { api } from "@/lib/api-client";
+import { api, fileUrl } from "@/lib/api-client";
 import { ATTENDANCE_STATUS, DEPARTMENTS, ROLES, labelOf } from "@/lib/constants";
-import { ROLE_PERMISSIONS } from "@/lib/permissions";
 import { date, dateTime, mapsLink, relative, time, toInputDate } from "@/lib/format";
 import { userFields } from "./config";
 
@@ -22,7 +21,6 @@ export function TeamPage() {
   const confirm = useConfirm();
   const [reset, setReset] = useState<any>(null);
   const [pw, setPw] = useState("");
-  const [roles, setRoles] = useState(false);
   const doReset = async () => {
     try {
       await api.post(`/users/${reset.id}/reset-password`, { password: pw });
@@ -54,7 +52,7 @@ export function TeamPage() {
         defaults={{ role: "staff", isActive: true }}
         filters={[{ name: "role", label: "Role", options: ROLES }, { name: "department", label: "Department", options: DEPARTMENTS }]}
         createLabel="Add member"
-        headerActions={<Button variant="secondary" icon={<ShieldCheck className="size-4" />} onClick={() => setRoles(true)}>Role permissions</Button>}
+        headerActions={<Button variant="secondary" icon={<ShieldCheck className="size-4" />} href="/team/roles">Roles & permissions</Button>}
         rowMenu={
           can("users:write")
             ? (r, reload) => (
@@ -87,31 +85,6 @@ export function TeamPage() {
         <label className="label">New temporary password</label>
         <input className="input" type="text" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="Min 8 chars, letters + numbers" />
         <p className="mt-2 text-xs text-muted">The member is logged out everywhere and must change this password on next login.</p>
-      </Modal>
-      <Modal open={roles} onClose={() => setRoles(false)} size="xl" title="What each role can do">
-        <div className="grid gap-4 md:grid-cols-2">
-          {ROLES.map((r) => {
-            const perms = ROLE_PERMISSIONS[r.value];
-            const grouped = perms.includes("*")
-              ? { Everything: ["full access"] }
-              : perms.reduce<Record<string, string[]>>((a, p) => {
-                  const [res, act] = p.split(":");
-                  (a[res] ??= []).push(act);
-                  return a;
-                }, {});
-            return (
-              <div key={r.value} className="rounded-lg border border-line p-3">
-                <StatusBadge options={ROLES} value={r.value} />
-                <ul className="mt-2 space-y-0.5 text-xs text-stone-600">
-                  {Object.entries(grouped).map(([res, acts]) => (
-                    <li key={res}><span className="font-medium capitalize text-ink">{res.replace(/_/g, " ")}</span>: {acts.join(", ")}</li>
-                  ))}
-                </ul>
-              </div>
-            );
-          })}
-        </div>
-        <p className="mt-3 text-xs text-muted">Designers, supervisors and office staff only see the sites they are assigned to (manager / designer / supervisor / member).</p>
       </Modal>
     </>
   );
@@ -250,6 +223,9 @@ export function ProfilePage() {
   const { data: sessions, mutate: reloadSessions } = useOne<any[]>("/auth/sessions");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
+  const [address, setAddress] = useState("");
+  const [emergency, setEmergency] = useState("");
+  const [savingProfile, setSavingProfile] = useState(false);
   const [cur, setCur] = useState("");
   const [nw, setNw] = useState("");
   const [nw2, setNw2] = useState("");
@@ -257,15 +233,20 @@ export function ProfilePage() {
     if (me) {
       setName(me.name);
       setPhone(me.phone ?? "");
+      setAddress(me.address ?? "");
+      setEmergency(me.emergencyContact ?? "");
     }
   }, [me]);
   const saveProfile = async () => {
+    setSavingProfile(true);
     try {
-      await api.patch("/auth/me", { name, phone });
+      await api.patch("/auth/me", { name, phone, address, emergencyContact: emergency });
       toast.success("Profile updated");
       reload();
     } catch (e) {
       toast.error(e);
+    } finally {
+      setSavingProfile(false);
     }
   };
   const changePw = async () => {
@@ -293,9 +274,11 @@ export function ProfilePage() {
         <Card title="Profile">
           <div className="space-y-3">
             <div><label className="label">Name</label><input className="input" value={name} onChange={(e) => setName(e.target.value)} /></div>
-            <div><label className="label">Phone</label><input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} /></div>
+            <div><label className="label">Phone</label><input className="input" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} /></div>
+            <div><label className="label">Address</label><textarea className="input min-h-16" rows={2} value={address} maxLength={300} onChange={(e) => setAddress(e.target.value)} /></div>
+            <div><label className="label">Emergency contact (name & phone)</label><input className="input" value={emergency} maxLength={100} onChange={(e) => setEmergency(e.target.value)} /></div>
             <dl className="grid grid-cols-2 gap-3 pt-2"><KV label="Designation">{me?.designation}</KV><KV label="Department">{labelOf(DEPARTMENTS, me?.department)}</KV></dl>
-            <Button icon={<Save className="size-4" />} onClick={saveProfile}>Save</Button>
+            <Button icon={<Save className="size-4" />} loading={savingProfile} onClick={saveProfile}>Save</Button>
           </div>
         </Card>
         <Card title="Change password">
@@ -368,6 +351,28 @@ export function SettingsPage() {
       {tab === "company" && (
         <Card title="Company profile (printed on quotations, bills and POs)">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="sm:col-span-2 lg:col-span-3">
+              <label className="label">Logo (printed on quotations, bills and POs)</label>
+              <div className="flex flex-wrap items-center gap-3">
+                {company.logo ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={fileUrl(company.logo)} alt="Company logo" className="h-14 max-w-48 rounded border border-line bg-white object-contain p-1" />
+                ) : (
+                  <span className="text-sm text-muted">No logo yet – the letters “LV” are printed instead.</span>
+                )}
+                {editable && (
+                  <>
+                    <UploadButton label={company.logo ? "Change logo" : "Upload logo"} accept="image/png,image/jpeg,image/webp" multiple={false} meta={{ category: "document", caption: "Company logo" }} onUploaded={(rows) => setCompany((x: any) => ({ ...x, logo: rows[0]?.id ?? x.logo }))} />
+                    {company.logo && (
+                      <Button size="sm" variant="ghost" onClick={() => setCompany((x: any) => ({ ...x, logo: null }))}>
+                        Remove
+                      </Button>
+                    )}
+                    <span className="text-xs text-muted">Click “Save” below after changing the logo.</span>
+                  </>
+                )}
+              </div>
+            </div>
             <div><label className="label">Company name</label><input className="input" {...c("name")} /></div>
             <div><label className="label">Tagline</label><input className="input" {...c("tagline")} /></div>
             <div><label className="label">Phone</label><input className="input" {...c("phone")} /></div>

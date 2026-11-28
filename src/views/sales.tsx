@@ -1,7 +1,7 @@
 "use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { ArrowLeft, Building2, CalendarPlus, CheckCircle2, FileSpreadsheet, LocateFixed, MapPin, MessageCircle, Pencil, Phone, Plus, Trash2, XCircle } from "lucide-react";
+import { ArrowLeft, Building2, CalendarPlus, CheckCircle2, FileSpreadsheet, LocateFixed, MapPin, MessageCircle, MoreHorizontal, Pencil, Phone, Plus, Trash2, XCircle } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { use, useEffect, useState } from "react";
@@ -9,7 +9,7 @@ import { useAuth } from "@/components/auth";
 import { DataTable, ExportButton, FilterBar, Pagination, ResourcePage, SearchBox, exportCsv } from "@/components/data-table";
 import { ActivityFeed, Attachments, FileLibrary, Person, ProjectLink, REF } from "@/components/domain";
 import { EntitySelect, FormDrawer, FormGrid, errorsFrom, toPayload, useFormState, type Field } from "@/components/form";
-import { Badge, Button, Card, Drawer, Empty, KV, LoadError, Loading, Modal, PageHeader, Segmented, StatusBadge, Tabs, cx, useConfirm, useToast } from "@/components/ui";
+import { Badge, Button, Card, Drawer, Empty, IconButton, KV, LoadError, Loading, Menu, MenuItem, Modal, PageHeader, Segmented, StatusBadge, Tabs, cx, useConfirm, useToast } from "@/components/ui";
 import { invalidate, useList, useOne } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import {
@@ -40,7 +40,29 @@ const leadColumns = [
   { key: "assignedTo", label: "Owner", render: (r: any) => <Person user={r.assignedTo} />, hideOnMobile: true },
 ];
 
-function LeadBoard({ params }: { params: Record<string, unknown> }) {
+/** Small pencil inside a card that is itself a link – opens the edit drawer instead of the page. */
+export function CardEditButton({ label, onClick }: { label: string; onClick: () => void }) {
+  const run = (e: React.SyntheticEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onClick();
+  };
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      title={label}
+      aria-label={label}
+      onClick={run}
+      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && run(e)}
+      className="inline-flex rounded p-1 text-stone-400 transition hover:bg-stone-100 hover:text-ink"
+    >
+      <Pencil className="size-3.5" />
+    </span>
+  );
+}
+
+function LeadBoard({ params, onEdit }: { params: Record<string, unknown>; onEdit?: (lead: any) => void }) {
   const toast = useToast();
   const { rows, mutate } = useList("/leads", { ...params, limit: 200, sort: "-updatedAt" });
   const [drag, setDrag] = useState<string | null>(null);
@@ -85,7 +107,10 @@ function LeadBoard({ params }: { params: Record<string, unknown> }) {
                   <p className="mt-0.5 text-xs text-muted">{[labelOf(PROPERTY_CONFIGS, l.propertyConfig), l.city].filter(Boolean).join(" · ")}</p>
                   <div className="mt-2 flex items-center justify-between text-xs">
                     <span className="font-medium">{l.budget ? money(l.budget) : ""}</span>
-                    {l.nextFollowUpAt && <span className={isOverdue(l.nextFollowUpAt) ? "text-red-600" : "text-muted"}>{date(l.nextFollowUpAt)}</span>}
+                    <span className="flex items-center gap-1">
+                      {l.nextFollowUpAt && <span className={isOverdue(l.nextFollowUpAt) ? "text-red-600" : "text-muted"}>{date(l.nextFollowUpAt)}</span>}
+                      {onEdit && <CardEditButton label="Edit lead" onClick={() => onEdit(l)} />}
+                    </span>
                   </div>
                 </Link>
               ))}
@@ -99,12 +124,22 @@ function LeadBoard({ params }: { params: Record<string, unknown> }) {
 
 export function LeadsPage() {
   const router = useRouter();
+  const toast = useToast();
   const { can } = useAuth();
   const [view, setView] = useState<"list" | "board">("list");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
   const [filters, setFilters] = useState<Record<string, any>>({});
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<any>(null);
+  const canEdit = can("leads:write");
+  const openEdit = async (r: any) => {
+    try {
+      setEditing(await api.get(`/leads/${r.id}`));
+    } catch (e) {
+      toast.error(e);
+    }
+  };
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search);
     if (sp.get("status")) setFilters({ status: sp.get("status") });
@@ -162,14 +197,32 @@ export function LeadsPage() {
         <FilterBar filters={view === "board" ? filterDefs.filter((f) => f.name !== "status") : filterDefs} values={filters} onChange={(k, v) => (setFilters((f) => ({ ...f, [k]: v })), setPage(1))} />
       </div>
       {view === "board" ? (
-        <LeadBoard params={{ q, ...filters, status: undefined }} />
+        <LeadBoard params={{ q, ...filters, status: undefined }} onEdit={canEdit ? openEdit : undefined} />
       ) : (
-        <div className="card">
-          <DataTable columns={leadColumns} rows={rows} loading={loading} error={error} onRetry={() => mutate()} onRowClick={(r) => router.push(`/leads/${r.id}`)} empty={<Empty title="No leads found" />} />
+        <div className="card overflow-visible">
+          <DataTable
+            columns={leadColumns}
+            rows={rows}
+            loading={loading}
+            error={error}
+            onRetry={() => mutate()}
+            onRowClick={(r) => router.push(`/leads/${r.id}`)}
+            empty={<Empty title="No leads found" />}
+            rowActions={
+              canEdit
+                ? (r) => (
+                    <Menu trigger={<IconButton label="Actions"><MoreHorizontal className="size-4" /></IconButton>}>
+                      <MenuItem icon={<Pencil className="size-4" />} onClick={() => openEdit(r)}>Edit</MenuItem>
+                    </Menu>
+                  )
+                : undefined
+            }
+          />
           {meta && <Pagination page={meta.page} pages={meta.pages} total={meta.total} onPage={setPage} />}
         </div>
       )}
       <FormDrawer open={creating} onClose={() => setCreating(false)} title="New lead" fields={leadFields} endpoint="/leads" defaults={{ status: "new", priority: "warm", source: "walk_in" }} onSaved={(r) => (mutate(), router.push(`/leads/${r.id}`))} />
+      <FormDrawer open={!!editing} onClose={() => setEditing(null)} title={editing ? `Edit lead – ${editing.name}` : "Edit lead"} fields={leadFields} endpoint="/leads" record={editing} onSaved={() => invalidate("/leads")} />
     </div>
   );
 }
@@ -186,7 +239,10 @@ function FollowUpPanel({ lead, project }: { lead?: string; project?: string }) {
   const [tomorrow] = useState(() => toInputDateTime(new Date(Date.now() + 86400000)));
   const [outcome, setOutcome] = useState("");
   const [next, setNext] = useState("");
+  const [completingBusy, setCompletingBusy] = useState(false);
   const done = async () => {
+    if (completingBusy) return; // a double tap would schedule the next follow-up twice
+    setCompletingBusy(true);
     try {
       await api.patch(`/followups/${completing.id}`, { status: "done", outcome, nextFollowUpAt: next ? new Date(next).toISOString() : null });
       toast.success("Follow-up completed");
@@ -197,6 +253,8 @@ function FollowUpPanel({ lead, project }: { lead?: string; project?: string }) {
       invalidate("/leads");
     } catch (e) {
       toast.error(e);
+    } finally {
+      setCompletingBusy(false);
     }
   };
   const fields = followupFields.filter((f) => f.name !== "lead");
@@ -223,11 +281,14 @@ function FollowUpPanel({ lead, project }: { lead?: string; project?: string }) {
                 {f.outcome && <p className="mt-1 rounded bg-stone-50 px-2 py-1 text-sm text-stone-700">↳ {f.outcome}</p>}
                 <p className="mt-1 text-xs text-muted">{f.assignedTo?.name}</p>
               </div>
-              {f.status === "pending" && can("followups:write") && (
+              {can("followups:write") && (
                 <div className="flex gap-1">
-                  <Button size="xs" variant="success" icon={<CheckCircle2 className="size-3.5" />} onClick={() => setCompleting(f)}>
-                    Done
-                  </Button>
+                  {f.status === "pending" && (
+                    <Button size="xs" variant="success" icon={<CheckCircle2 className="size-3.5" />} onClick={() => setCompleting(f)}>
+                      Done
+                    </Button>
+                  )}
+                  {/* done / missed / cancelled ones stay editable so the outcome can be corrected */}
                   <Button size="xs" variant="secondary" onClick={() => setEditing(f)}>
                     Edit
                   </Button>
@@ -276,7 +337,7 @@ function FollowUpPanel({ lead, project }: { lead?: string; project?: string }) {
             <Button variant="secondary" onClick={() => setCompleting(null)}>
               Cancel
             </Button>
-            <Button onClick={done}>Save</Button>
+            <Button loading={completingBusy} onClick={done}>Save</Button>
           </>
         }
       >
@@ -324,7 +385,7 @@ function MeasurementsEditor({ rows, onChange }: { rows: M[]; onChange: (r: M[]) 
                 <td key={k} className="p-1"><input type="number" step="any" className="input px-2 py-1" value={r[k] ?? ""} onChange={(e) => set(i, { [k]: e.target.value === "" ? "" : Number(e.target.value) })} /></td>
               ))}
               <td className="p-1">
-                <select className="input px-1 py-1" value={r.unit} onChange={(e) => set(i, { unit: e.target.value })}>
+                <select className="input py-1 pl-1 pr-6" value={r.unit} onChange={(e) => set(i, { unit: e.target.value })}>
                   {["ft", "in", "m", "cm", "mm"].map((u) => <option key={u}>{u}</option>)}
                 </select>
               </td>
@@ -363,6 +424,7 @@ export function SiteVisitDrawer({ open, onClose, record, lead, project, address,
   const fields: Field[] = [
     { name: "scheduledAt", label: "Visit date & time", type: "datetime", required: true },
     { name: "status", label: "Status", type: "select", options: SITE_VISIT_STATUS },
+    { name: "visitedAt", label: "Actually visited on", type: "datetime", hidden: (v) => v.status !== "completed", help: "Leave empty to use the time it is marked completed" },
     { name: "visitedBy", label: "Team visiting", type: "refs", ref: REF.user },
     { name: "address", label: "Site address", type: "textarea", rows: 2 },
     { name: "requirements", label: "Client requirements noted", type: "textarea" },
@@ -416,8 +478,8 @@ export function SiteVisitDrawer({ open, onClose, record, lead, project, address,
               Delete
             </Button>
           )}
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button loading={saving} onClick={save}>Save</Button>
+          <Button variant="secondary" onClick={onClose}>{can("site_visits:write") ? "Cancel" : "Close"}</Button>
+          {can("site_visits:write") && <Button loading={saving} onClick={save}>{record?.id ? "Save changes" : "Save"}</Button>}
         </>
       }
     >
@@ -454,8 +516,10 @@ export function SiteVisitDrawer({ open, onClose, record, lead, project, address,
 
 export function SiteVisitPanel({ lead, project, address }: { lead?: string; project?: string; address?: string }) {
   const { can } = useAuth();
+  const toast = useToast();
   const { rows, mutate } = useList("/site-visits", { lead, project, limit: 50 });
   const [open, setOpen] = useState<any>(false);
+  const openVisit = (id: string) => api.get(`/site-visits/${id}`).then(setOpen).catch(toast.error);
   return (
     <div className="space-y-3">
       {can("site_visits:write") && (
@@ -468,13 +532,18 @@ export function SiteVisitPanel({ lead, project, address }: { lead?: string; proj
       ) : (
         <ul className="space-y-2">
           {rows.map((v) => (
-            <li key={v.id} className="cursor-pointer rounded-lg border border-line p-3 hover:border-brand-300" onClick={() => api.get(`/site-visits/${v.id}`).then(setOpen)}>
+            <li key={v.id} className="cursor-pointer rounded-lg border border-line p-3 hover:border-brand-300" onClick={() => openVisit(v.id)}>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <StatusBadge options={SITE_VISIT_STATUS} value={v.status} />
                   <span className="text-sm font-medium">{dateTime(v.visitedAt ?? v.scheduledAt)}</span>
                 </div>
-                <span className="text-xs text-muted">{v.visitedBy?.map((u: any) => u.name).join(", ")}</span>
+                <span className="flex items-center gap-2">
+                  <span className="text-xs text-muted">{v.visitedBy?.map((u: any) => u.name).join(", ")}</span>
+                  <Button size="xs" variant="secondary" icon={can("site_visits:write") ? <Pencil className="size-3.5" /> : undefined} onClick={(e) => (e.stopPropagation(), openVisit(v.id))}>
+                    {can("site_visits:write") ? "Edit" : "View"}
+                  </Button>
+                </span>
               </div>
               <p className="mt-1 text-xs text-muted">
                 {v.measurements?.length ?? 0} measurements · {v.photos?.length ?? 0} photos {v.address && `· ${v.address}`}
@@ -740,11 +809,13 @@ export function FollowUpsPage() {
 /* -------------------------------- Site visits ----------------------------- */
 export function SiteVisitsPage() {
   const { can } = useAuth();
+  const toast = useToast();
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("scheduled");
   const [page, setPage] = useState(1);
   const { rows, meta, loading, mutate } = useList("/site-visits", { q, status, page, sort: status === "scheduled" ? "scheduledAt" : "-scheduledAt" });
   const [open, setOpen] = useState<any>(false);
+  const openVisit = (id: string) => api.get(`/site-visits/${id}`).then(setOpen).catch(toast.error);
   const [newFor, setNewFor] = useState<{ lead?: string; project?: string } | null>(null);
   return (
     <div>
@@ -755,8 +826,8 @@ export function SiteVisitsPage() {
       />
       <div className="card">
         <div className="flex flex-wrap gap-2 border-b border-line p-3">
-          <SearchBox value={q} onChange={setQ} placeholder="Address, requirement…" />
-          <select className="input w-auto" value={status} onChange={(e) => setStatus(e.target.value)}>
+          <SearchBox value={q} onChange={(v) => (setQ(v), setPage(1))} placeholder="Address, requirement…" />
+          <select className="input w-auto" value={status} onChange={(e) => (setStatus(e.target.value), setPage(1))}>
             <option value="">All</option>
             {SITE_VISIT_STATUS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
           </select>
@@ -764,7 +835,14 @@ export function SiteVisitsPage() {
         <DataTable
           loading={loading}
           rows={rows}
-          onRowClick={(r) => api.get(`/site-visits/${r.id}`).then(setOpen)}
+          onRowClick={(r) => openVisit(r.id)}
+          rowActions={(r) => (
+            <Menu trigger={<IconButton label="Actions"><MoreHorizontal className="size-4" /></IconButton>}>
+              <MenuItem icon={<Pencil className="size-4" />} onClick={() => openVisit(r.id)}>{can("site_visits:write") ? "Edit visit & measurements" : "View visit & measurements"}</MenuItem>
+              {r.lead && <MenuItem href={`/leads/${r.lead.id}`}>Open lead</MenuItem>}
+              {r.project && <MenuItem href={`/projects/${r.project.id}?tab=visits`}>Open site</MenuItem>}
+            </Menu>
+          )}
           columns={[
             { key: "scheduledAt", label: "When", render: (r) => dateTime(r.visitedAt ?? r.scheduledAt) },
             { key: "for", label: "Lead / site", render: (r) => (r.project ? <ProjectLink project={r.project} /> : <Link href={`/leads/${r.lead?.id}`} onClick={(e) => e.stopPropagation()} className="hover:underline">{r.lead?.name} <span className="text-xs text-muted">{r.lead?.phone}</span></Link>) },

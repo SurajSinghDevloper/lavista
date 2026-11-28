@@ -12,8 +12,14 @@ function opts<const T extends readonly { value: string; label: string; color?: s
 export function values<T extends readonly { value: string }[]>(o: T) {
   return o.map((x) => x.value) as unknown as [T[number]["value"], ...T[number]["value"][]];
 }
+/** Labels of options an admin removed from a managed list – old records still show their proper name. */
+const RETIRED = new WeakMap<readonly Option[], Map<string, string>>();
+export function setRetiredOptions(list: readonly Option[], removed: readonly Option[]) {
+  RETIRED.set(list, new Map(removed.map((o) => [o.value, o.label])));
+}
 export function labelOf(list: readonly Option[], value?: string | null) {
-  return list.find((x) => x.value === value)?.label ?? value ?? "";
+  if (value == null || value === "") return "";
+  return list.find((x) => x.value === value)?.label ?? RETIRED.get(list)?.get(value) ?? value;
 }
 export function colorOf(list: readonly Option[], value?: string | null) {
   return list.find((x) => x.value === value)?.color ?? "gray";

@@ -4,7 +4,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { jwtVerify, SignJWT } from "jose";
 import type { NextRequest, NextResponse } from "next/server";
 import type { Role } from "@/lib/constants";
-import { permissionsFor, type Permission } from "@/lib/permissions";
+import type { Permission } from "@/lib/permissions";
+import { permissionsForRole } from "./services/roles";
 import { connectDB } from "./db";
 import { env } from "./env";
 import { Session, User } from "./models/auth";
@@ -107,7 +108,7 @@ export async function getAuthUser(req: NextRequest): Promise<{ user: AuthUser; v
       name: user.name,
       email: user.email,
       role: user.role,
-      permissions: permissionsFor(user.role, user.extraPermissions ?? []),
+      permissions: await permissionsForRole(user.role, user.extraPermissions ?? []),
       sessionId: claims.sid,
     },
   };

@@ -1,14 +1,4 @@
-import {
-  FOLLOWUP_STATUS,
-  FOLLOWUP_TYPES,
-  LEAD_PRIORITY,
-  LEAD_SOURCES,
-  LEAD_STATUS,
-  PROPERTY_CONFIGS,
-  PROPERTY_TYPES,
-  SITE_VISIT_STATUS,
-  values,
-} from "@/lib/constants";
+import { FOLLOWUP_STATUS, LEAD_PRIORITY, LEAD_STATUS, SITE_VISIT_STATUS, values } from "@/lib/constants";
 import { Schema } from "mongoose";
 import { defineModel, LocationSchema, makeSchema, ObjectId } from "./_base";
 
@@ -22,13 +12,13 @@ const LeadSchema = makeSchema({
   address: String,
   city: { type: String, trim: true },
   location: LocationSchema,
-  propertyType: { type: String, enum: values(PROPERTY_TYPES) },
-  propertyConfig: { type: String, enum: values(PROPERTY_CONFIGS) },
+  propertyType: { type: String },
+  propertyConfig: { type: String },
   areaSqft: Number,
   scope: { type: [String], default: [] },
   budget: Number,
   expectedStart: Date,
-  source: { type: String, enum: values(LEAD_SOURCES), default: "other", index: true },
+  source: { type: String, default: "other", index: true },
   sourceDetails: String,
   referredBy: String,
   externalId: { type: String, index: true }, // e.g. Meta leadgen_id
@@ -52,7 +42,7 @@ export const Lead = defineModel("Lead", LeadSchema);
 const FollowUpSchema = makeSchema({
   lead: { type: ObjectId, ref: "Lead", index: true },
   project: { type: ObjectId, ref: "Project", index: true },
-  type: { type: String, enum: values(FOLLOWUP_TYPES), default: "call" },
+  type: { type: String, default: "call" },
   scheduledAt: { type: Date, required: true, index: true },
   status: { type: String, enum: values(FOLLOWUP_STATUS), default: "pending", index: true },
   purpose: String,

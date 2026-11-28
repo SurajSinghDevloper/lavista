@@ -1,4 +1,4 @@
-import { EXPENSE_CATEGORIES, INVOICE_STATUS, INVOICE_TYPES, PAYMENT_MODES, RECEIPT_TYPES, values } from "@/lib/constants";
+import { INVOICE_STATUS, INVOICE_TYPES, values } from "@/lib/constants";
 import { defineModel, LineItemSchema, makeSchema, ObjectId } from "./_base";
 
 /* --------------------------- Client payment receipt ---------------------- */
@@ -8,10 +8,10 @@ const PaymentSchema = makeSchema({
   client: { type: ObjectId, ref: "Client", index: true },
   invoice: { type: ObjectId, ref: "Invoice", index: true },
   milestone: { type: ObjectId }, // project.paymentSchedule._id
-  type: { type: String, enum: values(RECEIPT_TYPES), default: "advance" },
+  type: { type: String, default: "advance" },
   amount: { type: Number, required: true, min: 0 },
   date: { type: Date, default: Date.now, index: true },
-  mode: { type: String, enum: values(PAYMENT_MODES), default: "bank_transfer" },
+  mode: { type: String, default: "bank_transfer" },
   reference: String,
   notes: String,
   files: [{ type: ObjectId, ref: "File" }],
@@ -52,7 +52,7 @@ export const Invoice = defineModel("Invoice", InvoiceSchema);
 const ExpenseSchema = makeSchema({
   expenseNo: { type: String, unique: true, sparse: true },
   project: { type: ObjectId, ref: "Project", index: true }, // empty ⇒ office overhead
-  category: { type: String, enum: values(EXPENSE_CATEGORIES), required: true, index: true },
+  category: { type: String, required: true, index: true },
   vendor: { type: ObjectId, ref: "Vendor", index: true },
   contractor: { type: ObjectId, ref: "Contractor", index: true },
   purchaseOrder: { type: ObjectId, ref: "PurchaseOrder" },
@@ -60,7 +60,7 @@ const ExpenseSchema = makeSchema({
   payee: String,
   amount: { type: Number, required: true, min: 0 },
   date: { type: Date, default: Date.now, index: true },
-  mode: { type: String, enum: values(PAYMENT_MODES), default: "cash" },
+  mode: { type: String, default: "cash" },
   reference: String,
   description: String,
   files: [{ type: ObjectId, ref: "File" }],

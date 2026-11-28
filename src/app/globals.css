@@ -45,18 +45,30 @@ body {
   scrollbar-color: #d6d3d1 transparent;
 }
 
-/* inputs */
-.input {
-  @apply w-full rounded-lg border border-line bg-white px-3 py-2 text-sm text-ink shadow-xs outline-none transition placeholder:text-stone-400 focus:border-brand-400 focus:ring-3 focus:ring-brand-100 disabled:bg-stone-50 disabled:text-stone-500;
-}
-select.input {
-  @apply pr-8;
-}
-.label {
-  @apply mb-1 block text-xs font-medium text-stone-600;
-}
-.card {
-  @apply rounded-xl border border-line bg-white shadow-xs;
+/* inputs – inside the components layer so utilities (pl-9, w-auto, text-xs…) can override them */
+@layer components {
+  .input {
+    @apply w-full rounded-lg border border-line bg-white px-3 py-2 text-sm text-ink shadow-xs outline-none transition placeholder:text-stone-400 focus:border-brand-400 focus:ring-3 focus:ring-brand-100 disabled:bg-stone-50 disabled:text-stone-500;
+  }
+  select.input {
+    @apply pr-8;
+  }
+  /* an input with a separate prefix box, e.g. ₹ */
+  .input-group {
+    @apply flex w-full items-stretch rounded-lg shadow-xs focus-within:ring-3 focus-within:ring-brand-100;
+  }
+  .input-group > .input-addon {
+    @apply inline-flex shrink-0 select-none items-center rounded-l-lg border border-r-0 border-line bg-stone-50 px-2.5 text-sm text-stone-500;
+  }
+  .input-group > .input {
+    @apply min-w-0 flex-1 rounded-l-none shadow-none focus:ring-0;
+  }
+  .label {
+    @apply mb-1 block text-xs font-medium text-stone-600;
+  }
+  .card {
+    @apply rounded-xl border border-line bg-white shadow-xs;
+  }
 }
 
 /* print */

@@ -4,7 +4,7 @@
 import { ArrowLeft, LayoutGrid, MessageCircle, Plus, Printer, Save, Send, Table2, Trash2, XCircle } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { use, useEffect, useState } from "react";
+import { use, useMemo, useState } from "react";
 import { useAuth } from "@/components/auth";
 import { DataTable, ResourcePage } from "@/components/data-table";
 import { LineItemsEditor, ProjectLink, REF, Totals, emptyItem, useCompany, type LineItem } from "@/components/domain";
@@ -24,7 +24,21 @@ export function AccountsPage() {
   const [status, setStatus] = useState("active");
   if (!data) return error && !isLoading ? <LoadError error={error} onRetry={() => mutate()} /> : <Loading />;
   const sites = data.sites.filter((s: any) => !status || s.status === status);
-  const t = data.totals;
+  // the cards add up the sites shown below (same filter); office figures are company-wide
+  const sum = (k: string) => Math.round(sites.reduce((a: number, s: any) => a + (Number(s[k]) || 0), 0) * 100) / 100;
+  const t = {
+    contractValue: sum("contractValue"),
+    invoiced: sum("invoiced"),
+    received: sum("received"),
+    spent: sum("spent"),
+    materialFromStock: sum("materialFromStock"),
+    cost: sum("cost"),
+    balance: Math.round((sum("received") - sum("cost")) * 100) / 100,
+    outstanding: Math.round(sites.reduce((a: number, s: any) => a + Math.max(0, Number(s.outstanding) || 0), 0) * 100) / 100,
+    officeOverheads: data.totals.officeOverheads,
+    factoryPurchases: data.totals.factoryPurchases,
+  };
+  const scopeLabel = status === "active" ? "active sites" : status === "completed" ? "completed sites" : "all sites";
   return (
     <div className="space-y-5">
       <PageHeader
@@ -47,10 +61,10 @@ export function AccountsPage() {
         <StatCard label="Site cost (B)" value={moneyShort(t.cost)} tone="bad" hint={`Cash ${moneyShort(t.spent)} + factory material ${moneyShort(t.materialFromStock)}`} />
         <StatCard label="Balance (C = A − B)" value={moneyShort(t.balance)} tone={t.balance >= 0 ? "brand" : "bad"} />
         <StatCard label="Client outstanding" value={moneyShort(t.outstanding)} tone="warn" />
-        <StatCard label="Office overheads" value={moneyShort(t.officeOverheads)} hint={`Factory stock bought ${moneyShort(t.factoryPurchases)}`} />
+        <StatCard label="Office overheads" value={moneyShort(t.officeOverheads)} hint={`All time · factory stock bought ${moneyShort(t.factoryPurchases)}`} />
       </div>
       <p className="-mt-2 text-xs text-muted">
-        B = expenses paid for the site + material issued to it from factory stock (at average cost). Factory stock purchases are not overheads – their cost reaches each site when the material is issued.
+        Totals are for the {sites.length} {scopeLabel} listed below (office overheads are company-wide). B = expenses paid for the site + material issued to it from factory stock (at average cost). Factory stock purchases are not overheads – their cost reaches each site when the material is issued.
       </p>
 
       {sites.length === 0 ? (
@@ -216,7 +230,9 @@ function InvoiceEditor({ initial }: { initial: any }) {
   const { can } = useAuth();
   const [inv, setInv] = useState<any>(initial);
   const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false); // status change in progress
   const locked = ["paid", "cancelled"].includes(inv.status);
+  const readOnly = locked || !can("invoices:write");
   const set = (p: any) => setInv((x: any) => ({ ...x, ...p }));
   const subtotal = inv.items.reduce((s: number, i: LineItem) => s + i.qty * i.rate, 0);
   const disc = Math.min(Number(inv.discountAmount) || 0, subtotal);
@@ -256,12 +272,15 @@ function InvoiceEditor({ initial }: { initial: any }) {
   };
   const setStatus = async (status: string) => {
     if (status === "cancelled" && !(await confirm({ title: "Cancel this bill?", danger: true, confirmText: "Cancel bill" }))) return;
+    setBusy(true);
     try {
       const r: any = await api.post(`/invoices/${inv.id}/status`, { status });
       setInv((x: any) => ({ ...x, ...r }));
       invalidate("/invoices", "/accounts");
     } catch (e) {
       toast.error(e);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -279,8 +298,8 @@ function InvoiceEditor({ initial }: { initial: any }) {
                 WhatsApp
               </Button>
             )}
-            {inv.id && inv.status === "draft" && can("invoices:write") && <Button variant="secondary" icon={<Send className="size-4" />} onClick={() => setStatus("issued")}>Issue bill</Button>}
-            {inv.id && ["draft", "issued"].includes(inv.status) && can("invoices:write") && <Button variant="ghost" className="text-red-600" icon={<XCircle className="size-4" />} onClick={() => setStatus("cancelled")}>Cancel</Button>}
+            {inv.id && inv.status === "draft" && can("invoices:write") && <Button variant="secondary" icon={<Send className="size-4" />} loading={busy} onClick={() => setStatus("issued")}>Issue bill</Button>}
+            {inv.id && ["draft", "issued"].includes(inv.status) && can("invoices:write") && <Button variant="ghost" className="text-red-600" icon={<XCircle className="size-4" />} disabled={busy} onClick={() => setStatus("cancelled")}>Cancel</Button>}
             {!locked && can("invoices:write") && <Button icon={<Save className="size-4" />} loading={saving} onClick={save}>Save</Button>}
           </>
         }
@@ -293,18 +312,18 @@ function InvoiceEditor({ initial }: { initial: any }) {
           </div>
           <div>
             <label className="label">Type</label>
-            <select className="input" value={inv.type} disabled={locked} onChange={(e) => set({ type: e.target.value })}>{INVOICE_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}</select>
+            <select className="input" value={inv.type} disabled={readOnly} onChange={(e) => set({ type: e.target.value })}>{INVOICE_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}</select>
           </div>
           <div className="flex items-end pb-2">
-            <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="size-4 accent-brand-600" checked={!!inv.interState} disabled={locked} onChange={(e) => set({ interState: e.target.checked })} /> Inter-state (IGST)</label>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="size-4 accent-brand-600" checked={!!inv.interState} disabled={readOnly} onChange={(e) => set({ interState: e.target.checked })} /> Inter-state (IGST)</label>
           </div>
-          <div><label className="label">Bill date</label><input type="date" className="input" value={toInputDate(inv.date)} disabled={locked} onChange={(e) => set({ date: e.target.value })} /></div>
-          <div><label className="label">Due date</label><input type="date" className="input" value={toInputDate(inv.dueDate)} disabled={locked} onChange={(e) => set({ dueDate: e.target.value })} /></div>
-          <div><label className="label">Discount (₹)</label><input type="number" className="input" value={inv.discountAmount ?? 0} disabled={locked} onChange={(e) => set({ discountAmount: Number(e.target.value) })} /></div>
+          <div><label className="label">Bill date</label><input type="date" className="input" value={toInputDate(inv.date)} disabled={readOnly} onChange={(e) => set({ date: e.target.value })} /></div>
+          <div><label className="label">Due date</label><input type="date" className="input" value={toInputDate(inv.dueDate)} disabled={readOnly} onChange={(e) => set({ dueDate: e.target.value })} /></div>
+          <div><label className="label">Discount (₹)</label><input type="number" className="input" value={inv.discountAmount ?? 0} disabled={readOnly} onChange={(e) => set({ discountAmount: Number(e.target.value) })} /></div>
         </div>
       </Card>
       <Card title="Items">
-        <LineItemsEditor items={inv.items} onChange={(items) => set({ items })} showSection readOnly={locked} />
+        <LineItemsEditor items={inv.items} onChange={(items) => set({ items })} showSection readOnly={readOnly} />
         <div className="mt-4">
           <Totals
             rows={[
@@ -322,8 +341,8 @@ function InvoiceEditor({ initial }: { initial: any }) {
       </Card>
       <div className="grid gap-5 md:grid-cols-2">
         <Card title="Notes & terms">
-          <textarea className="input mb-2" rows={3} value={inv.notes ?? ""} disabled={locked} onChange={(e) => set({ notes: e.target.value })} placeholder="Notes printed on bill" />
-          <textarea className="input" rows={3} value={inv.terms ?? ""} disabled={locked} onChange={(e) => set({ terms: e.target.value })} placeholder="Terms (default from settings)" />
+          <textarea className="input mb-2" rows={3} value={inv.notes ?? ""} disabled={readOnly} onChange={(e) => set({ notes: e.target.value })} placeholder="Notes printed on bill" />
+          <textarea className="input" rows={3} value={inv.terms ?? ""} disabled={readOnly} onChange={(e) => set({ terms: e.target.value })} placeholder="Terms (default from settings)" />
         </Card>
         {inv.id && (
           <Card title="Payments against this bill" padded={false} action={can("payments:write") && inv.status !== "draft" && inv.status !== "cancelled" && <Button size="xs" variant="secondary" href={`/projects/${inv.project?.id}?tab=finance`}>Record payment</Button>}>
@@ -356,44 +375,163 @@ export function InvoiceDetail({ params }: { params: Promise<{ id: string }> }) {
 }
 
 /* ------------------------- Project finance (tab) ------------------------- */
+const r2 = (n: number) => Math.round(n * 100) / 100;
+const num = (v: unknown) => Number(v) || 0;
+
+/**
+ * Editing rows: % milestones follow the contract value (amount = value × %), "fixed" milestones keep a set
+ * rupee amount (stored with 0 %, the way the server already treats them). Typing an amount on a % milestone
+ * works out its % instead.
+ */
+function scheduleRows(schedule: any[], cv: number) {
+  return schedule.map((m) => ({
+    ...m,
+    fixed: !m.percent && num(m.amount) > 0,
+    // the server keeps each milestone's amount in step with the contract value (rounding on the last one)
+    amount: num(m.amount) || (m.percent && cv ? Math.round((cv * m.percent) / 100) : 0),
+  }));
+}
+
 function ScheduleEditor({ project, schedule, contractValue, onSaved }: { project: string; schedule: any[]; contractValue: number; onSaved: () => void }) {
   const toast = useToast();
+  const confirm = useConfirm();
   const { can } = useAuth();
-  const [rows, setRows] = useState<any[]>(schedule);
+  const cv = num(contractValue);
+  const showPaid = can("payments:read") || can("accounts:read");
+  const viewRows = useMemo(() => scheduleRows(schedule, cv), [schedule, cv]);
+  // edit rows are filled when "Edit" is clicked – a background refresh (e.g. returning to the tab) never wipes them
+  const [rows, setRows] = useState<any[]>([]);
   const [edit, setEdit] = useState(false);
-  useEffect(() => setRows(schedule), [schedule]);
+  const [saving, setSaving] = useState(false);
+  // right after saving, keep showing what was saved until the refreshed schedule arrives
+  const [savedFrom, setSavedFrom] = useState<any[] | null>(null);
+  const shown = edit || (savedFrom !== null && savedFrom === schedule) ? rows : viewRows;
+  const startEdit = () => (setRows(scheduleRows(schedule, cv)), setSavedFrom(null), setEdit(true));
+  const setRow = (i: number, fn: (m: any) => any) => setRows((l) => l.map((x, k) => (k === i ? { ...x, ...fn(x) } : x)));
+  const field = (v: string) => (v === "" ? "" : Number(v)); // keep an emptied box empty while typing
+
+  const pctOf = (m: any) => (m.fixed ? (cv ? (num(m.amount) / cv) * 100 : 0) : num(m.percent));
+  const onPercent = (i: number, v: string) => setRow(i, () => ({ percent: field(v), amount: cv ? Math.round((cv * num(v)) / 100) : 0 }));
+  const onAmount = (i: number, v: string) => setRow(i, (m) => (m.fixed || !cv ? { amount: field(v), percent: 0, fixed: true } : { amount: field(v), percent: (num(v) / cv) * 100 }));
+  const onFixed = (i: number, fixed: boolean) => setRow(i, (m) => (fixed ? { fixed, percent: 0 } : { fixed, percent: cv ? (num(m.amount) / cv) * 100 : 0 }));
+
+  const totalPct = rows.reduce((s, m) => s + pctOf(m), 0);
+  const totalAmt = rows.reduce((s, m) => s + num(m.amount), 0);
+  const hasFixed = rows.some((m) => m.fixed);
+  // with no contract value yet, fixed amounts can't be turned into %, so only an all-% schedule can be checked
+  const mismatch = rows.length > 0 && (cv ? Math.abs(totalPct - 100) > 0.05 : !hasFixed && Math.abs(totalPct - 100) > 0.05);
+  const mismatchText = cv
+    ? `The milestones add up to ${r2(totalPct)}% (${money(totalAmt)}) of the contract value ${money(cv)} – they should add up to 100%.`
+    : `The milestones add up to ${r2(totalPct)}% – they should add up to 100%.`;
+
   const save = async () => {
+    if (rows.some((m) => !String(m.name ?? "").trim())) return toast.error("Every milestone needs a name");
+    if (rows.some((m) => !m.fixed && num(m.percent) > 100)) return toast.error("A milestone can't be more than 100% of the contract value");
+    if (mismatch && !(await confirm({ title: "Schedule doesn't add up to 100%", message: `${mismatchText} Save it anyway?`, confirmText: "Save anyway" }))) return;
+    setSaving(true);
     try {
-      await api.patch(`/projects/${project}`, { paymentSchedule: rows.map((r) => ({ ...r, amount: r.percent ? Math.round((contractValue * r.percent) / 100) : r.amount, dueDate: r.dueDate || null })) });
+      await api.patch(`/projects/${project}`, {
+        paymentSchedule: rows.map(({ fixed, ...m }) => ({
+          ...m,
+          percent: fixed ? 0 : num(m.percent),
+          amount: fixed ? num(m.amount) : cv ? Math.round((cv * num(m.percent)) / 100) : num(m.amount),
+          dueDate: m.dueDate || null,
+          notes: m.notes ?? "",
+        })),
+      });
       toast.success("Payment schedule saved");
+      setSavedFrom(schedule);
       setEdit(false);
       onSaved();
     } catch (e) {
       toast.error(e);
+    } finally {
+      setSaving(false);
     }
   };
-  const totalPct = rows.reduce((s, r) => s + (Number(r.percent) || 0), 0);
   return (
-    <Card title="Client payment schedule" action={can("projects:write") && (edit ? <span className="flex gap-1"><Button size="xs" variant="secondary" onClick={() => (setRows(schedule), setEdit(false))}>Cancel</Button><Button size="xs" onClick={save}>Save</Button></span> : <Button size="xs" variant="secondary" onClick={() => setEdit(true)}>Edit</Button>)} padded={false}>
-      <table className="w-full text-sm">
-        <thead className="border-b border-line text-left text-[11px] uppercase text-stone-500"><tr><th className="px-4 py-2">Milestone</th><th className="px-2 text-right">%</th><th className="px-2 text-right">Amount</th><th className="px-2">Due</th><th className="px-4 text-right">Status</th>{edit && <th />}</tr></thead>
-        <tbody>
-          {rows.map((m, i) => (
-            <tr key={m.id ?? i} className="border-b border-line last:border-0">
-              <td className="px-4 py-2">{edit ? <input className="input px-2 py-1" value={m.name} onChange={(e) => setRows((l) => l.map((x, k) => (k === i ? { ...x, name: e.target.value } : x)))} /> : m.name}</td>
-              <td className="px-2 text-right">{edit ? <input type="number" className="input w-16 px-2 py-1 text-right" value={m.percent ?? 0} onChange={(e) => setRows((l) => l.map((x, k) => (k === i ? { ...x, percent: Number(e.target.value) } : x)))} /> : `${m.percent ?? 0}%`}</td>
-              <td className="px-2 text-right tabular-nums">{money(m.percent ? (contractValue * m.percent) / 100 : m.amount)}</td>
-              <td className="px-2">{edit ? <input type="date" className="input px-2 py-1" value={toInputDate(m.dueDate)} onChange={(e) => setRows((l) => l.map((x, k) => (k === i ? { ...x, dueDate: e.target.value } : x)))} /> : date(m.dueDate)}</td>
-              <td className="px-4 text-right"><StatusBadge options={MILESTONE_STATUS} value={m.status} /></td>
-              {edit && <td className="pr-2"><button className="text-stone-400 hover:text-red-600" onClick={() => setRows((l) => l.filter((_, k) => k !== i))}><Trash2 className="size-4" /></button></td>}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <Card
+      title="Client payment schedule"
+      action={can("projects:write") && (edit ? <span className="flex gap-1"><Button size="xs" variant="secondary" onClick={() => setEdit(false)}>Cancel</Button><Button size="xs" loading={saving} onClick={save}>Save</Button></span> : <Button size="xs" variant="secondary" onClick={startEdit}>Edit</Button>)}
+      padded={false}
+    >
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="border-b border-line text-left text-[11px] uppercase text-stone-500"><tr><th className="px-4 py-2">Milestone</th><th className="px-2 text-right">%</th><th className="px-2 text-right">Amount</th><th className="px-2">Due</th><th className="px-4 text-right">Status</th>{edit && <th />}</tr></thead>
+          <tbody>
+            {shown.map((m, i) => (
+              <tr key={m.id ?? i} className="border-b border-line align-top last:border-0">
+                <td className="px-4 py-2">
+                  {edit ? (
+                    <>
+                      <input className="input px-2 py-1" value={m.name} placeholder="Milestone" onChange={(e) => setRow(i, () => ({ name: e.target.value }))} />
+                      <input className="input mt-1 px-2 py-1 text-xs" value={m.notes ?? ""} placeholder="Note (optional)" onChange={(e) => setRow(i, () => ({ notes: e.target.value }))} />
+                    </>
+                  ) : (
+                    <>
+                      {m.name}
+                      {m.notes && <span className="block text-xs text-muted">{m.notes}</span>}
+                    </>
+                  )}
+                </td>
+                <td className="px-2 py-2 text-right">
+                  {edit ? (
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step="any"
+                      className="input w-20 px-2 py-1 text-right"
+                      value={m.fixed ? r2(pctOf(m)) : m.percent === "" ? "" : r2(num(m.percent))}
+                      disabled={m.fixed}
+                      title={m.fixed ? "Fixed amount – % shown for reference only" : undefined}
+                      onWheel={(e) => (e.target as HTMLInputElement).blur()}
+                      onChange={(e) => onPercent(i, e.target.value)}
+                    />
+                  ) : m.fixed ? (
+                    <span className="text-muted">{cv ? `≈${r2(pctOf(m))}%` : "—"}</span>
+                  ) : (
+                    `${r2(num(m.percent))}%`
+                  )}
+                </td>
+                <td className="px-2 py-2 text-right tabular-nums">
+                  {edit ? (
+                    <div className="flex flex-col items-end gap-1">
+                      <input type="number" min={0} step="any" className="input w-28 px-2 py-1 text-right" value={m.amount ?? ""} onWheel={(e) => (e.target as HTMLInputElement).blur()} onChange={(e) => onAmount(i, e.target.value)} />
+                      <label className="flex items-center gap-1 text-[11px] text-muted" title="Keep this exact amount even if the contract value changes later">
+                        <input type="checkbox" className="size-3 accent-brand-600" checked={!!m.fixed} onChange={(e) => onFixed(i, e.target.checked)} /> Fixed amount
+                      </label>
+                    </div>
+                  ) : (
+                    <>
+                      {money(m.amount)}
+                      {m.fixed && <span className="block text-[10px] text-muted">fixed</span>}
+                      {showPaid && num(m.paidAmount) > 0 && (
+                        <span className="block text-[11px] text-emerald-700">
+                          {num(m.paidAmount) + 1 >= num(m.amount) ? "Fully received" : `${money(m.paidAmount)} of ${money(m.amount)} received`}
+                        </span>
+                      )}
+                    </>
+                  )}
+                </td>
+                <td className="px-2 py-2">{edit ? <input type="date" className="input px-2 py-1" value={toInputDate(m.dueDate)} onChange={(e) => setRow(i, () => ({ dueDate: e.target.value }))} /> : date(m.dueDate)}</td>
+                <td className="px-4 py-2 text-right"><StatusBadge options={MILESTONE_STATUS} value={m.status} /></td>
+                {edit && <td className="py-2 pr-2"><button className="text-stone-400 hover:text-red-600" title="Remove milestone" onClick={() => setRows((l) => l.filter((_, k) => k !== i))}><Trash2 className="size-4" /></button></td>}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       {edit && (
-        <div className="flex items-center justify-between border-t border-line px-4 py-2">
-          <Button size="xs" variant="secondary" icon={<Plus className="size-3.5" />} onClick={() => setRows((l) => [...l, { name: "", percent: 0, status: "upcoming" }])}>Add milestone</Button>
-          <span className={cx("text-xs", totalPct !== 100 ? "text-red-600" : "text-muted")}>Total {totalPct}%</span>
+        <div className="space-y-1 border-t border-line px-4 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Button size="xs" variant="secondary" icon={<Plus className="size-3.5" />} onClick={() => setRows((l) => [...l, { name: "", percent: 0, amount: 0, status: "upcoming", fixed: false }])}>Add milestone</Button>
+            <span className={cx("text-xs tabular-nums", mismatch ? "font-medium text-red-600" : "text-muted")}>
+              Total {r2(totalPct)}%{cv ? ` · ${money(totalAmt)} of ${money(cv)}` : ""}
+            </span>
+          </div>
+          {mismatch && <p className="text-xs text-red-600">{mismatchText}</p>}
+          {!cv && <p className="text-xs text-muted">The contract value isn&apos;t set yet – % milestones get their amounts once a quotation is approved or the contract value is entered.</p>}
         </div>
       )}
     </Card>
@@ -403,25 +541,33 @@ function ScheduleEditor({ project, schedule, contractValue, onSaved }: { project
 export function FinancePanel({ project, summary, reload }: { project: any; summary: any; reload: () => void }) {
   const { can } = useAuth();
   const [tab, setTab] = useState<"payments" | "bills" | "expenses">(can("payments:read") ? "payments" : "expenses");
-  const f = summary?.finance ?? {};
+  // null when this role may not see money received / spent – then those cards are left out, not shown as ₹0
+  const f = summary?.finance ?? null;
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <StatCard label="Contract value" value={money(summary?.contractValue)} />
-        <StatCard label="Received (A)" value={money(f.received)} tone="good" />
-        <StatCard label="Site cost (B)" value={money(f.cost)} tone="bad" hint={`Cash ${money(f.spent)} + factory material ${money(f.materialFromStock)}`} />
-        <StatCard label="Balance (C)" value={money(f.balance)} tone={f.balance >= 0 ? "brand" : "bad"} />
-        <StatCard label="Client outstanding" value={money(summary?.outstanding)} tone="warn" hint={`Billed ${money(f.invoiced)}`} />
-      </div>
+      {summary && (
+        <div className={cx("grid grid-cols-2 gap-3", f ? "lg:grid-cols-5" : "lg:grid-cols-3")}>
+          <StatCard label="Contract value" value={money(summary.contractValue)} />
+          {f && (
+            <>
+              <StatCard label="Received (A)" value={money(f.received)} tone="good" />
+              <StatCard label="Site cost (B)" value={money(f.cost)} tone="bad" hint={`Cash ${money(f.spent)} + factory material ${money(f.materialFromStock)}`} />
+              <StatCard label="Balance (C)" value={money(f.balance)} tone={f.balance >= 0 ? "brand" : "bad"} />
+              {summary.outstanding != null && <StatCard label="Client outstanding" value={money(summary.outstanding)} tone="warn" hint={`Billed ${money(f.invoiced)}`} />}
+            </>
+          )}
+        </div>
+      )}
+      {summary && !f && <p className="-mt-2 text-xs text-muted">Received, spent and balance figures are shown to accounts and managers only.</p>}
       <div className="grid gap-5 xl:grid-cols-5">
         <div className="xl:col-span-2">
-          <ScheduleEditor project={project.id} schedule={project.paymentSchedule ?? []} contractValue={project.contractValue ?? 0} onSaved={reload} />
+          <ScheduleEditor key={project.id} project={project.id} schedule={project.paymentSchedule ?? []} contractValue={project.contractValue ?? 0} onSaved={reload} />
           <Card title="Committed costs" className="mt-5">
             <dl className="grid grid-cols-2 gap-3">
-              <KV label="Purchase orders">{money(f.poValue)}</KV>
-              <KV label="Contractor work orders">{money(f.woValue)}</KV>
-              <KV label="Internal budget">{money(summary?.budget)}</KV>
-              <KV label="Budget used">{summary?.budget ? `${Math.round((f.cost / summary.budget) * 100)}%` : "—"}</KV>
+              {f && <KV label="Purchase orders">{money(f.poValue)}</KV>}
+              {f && <KV label="Contractor work orders">{money(f.woValue)}</KV>}
+              <KV label="Internal budget">{summary ? money(summary.budget) : ""}</KV>
+              {f && <KV label="Budget used">{summary?.budget ? `${Math.round((f.cost / summary.budget) * 100)}%` : "—"}</KV>}
             </dl>
           </Card>
         </div>

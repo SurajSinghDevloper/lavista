@@ -1,14 +1,15 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Types } from "mongoose";
 import { z } from "zod";
-import { DESIGN_STATUS, DESIGN_TOOLS, DESIGN_TYPES, QUOTE_STATUS, QUOTE_TYPES, labelOf, values } from "@/lib/constants";
+import { DESIGN_STATUS, DESIGN_TYPES, QUOTE_STATUS, QUOTE_TYPES, labelOf, values } from "@/lib/constants";
+import { can } from "@/lib/permissions";
 import { crud } from "../crud";
-import { api, assertId, badRequest, notFound, parseBody } from "../http";
+import { api, assertId, badRequest, forbidden, notFound, parseBody } from "../http";
 import { Client, Design, Lead, Project, Quotation, serialize } from "../models";
 import { assertProjectAccess, audit, computeItems, nextNumber, notify, projectScopedFilter, round2 } from "../services/core";
 import { syncMilestones } from "../services/money";
 import { getSetting } from "../services/settings";
-import { zDate, zLineItem, zNum, zOptEnum, zRef, zRefs, zStr, zText } from "../validators";
+import { zDate, zLineItem, zNum, zOptEnum, zOptOption, zRef, zRefs, zStr, zText } from "../validators";
 import { advanceStageIf } from "./projects";
 
 /* --------------------------------- Designs ------------------------------- */
@@ -17,7 +18,7 @@ const designBase = {
   type: z.enum(values(DESIGN_TYPES)),
   room: z.string().trim().max(50).optional(),
   title: zStr(200),
-  tool: zOptEnum(values(DESIGN_TOOLS)),
+  tool: zOptOption,
   status: zOptEnum(values(DESIGN_STATUS)),
   files: zRefs,
   externalLink: z.preprocess((v) => (v === "" ? undefined : v), z.url().max(1000).optional()),
@@ -52,8 +53,13 @@ export const designs = crud({
     return data;
   },
   beforeUpdate: (data, existing) => {
-    if (data.status === "shared" && existing.status !== "shared") data.sharedAt = new Date();
-    if (data.status === "approved") throw badRequest("Use the Approve action to finalise a design");
+    // the edit form sends the current status back – an unchanged status is not a status change
+    if (data.status === existing.status) delete data.status;
+    if (data.status === "approved") throw badRequest("Use “Mark final” to approve a design version.");
+    if (data.status && existing.status === "approved") {
+      throw badRequest("This is the final approved version, so its status can't be changed here. Mark another version as final instead.");
+    }
+    if (data.status === "shared") data.sharedAt = new Date();
     return data;
   },
 });
@@ -211,21 +217,24 @@ export const reviseQuotation = api({ perm: "quotations:write" }, async ({ req, p
   return serialize(next.toJSON());
 });
 
-/** Sum of final approved quotations → site contract value (working + additional; else preliminary). */
+/**
+ * Sum of final approved quotations → site contract value (working + additional; else preliminary).
+ * With no approved quotation left the site keeps the value it has (e.g. one typed in by hand) –
+ * un-approving a quote must never wipe the contract value and zero the milestones.
+ */
 export async function recomputeContractValue(projectId: unknown) {
   const finals = await Quotation.find({ project: projectId, isFinal: true }).select("type total").lean<any[]>();
+  if (!finals.length) return;
   const main = finals.filter((f) => f.type !== "preliminary");
   const list = main.length ? main : finals;
   const value = round2(list.reduce((s, f) => s + (f.total ?? 0), 0));
   const p = await Project.findById(projectId);
   if (!p) return;
-  p.contractValue = value;
-  p.paymentSchedule = p.paymentSchedule.map((m: any) => {
-    const o = m.toObject();
-    return { ...o, amount: o.percent ? Math.round((value * o.percent) / 100) : o.amount };
-  });
-  await p.save();
-  await syncMilestones(projectId);
+  if (p.contractValue !== value) {
+    p.contractValue = value;
+    await p.save();
+  }
+  await syncMilestones(projectId); // milestone amounts follow the contract value (scheduleAmounts)
 }
 
 const statusBody = z.object({
@@ -240,8 +249,11 @@ export const quotationStatus = api({ perm: "quotations:write" }, async ({ req, p
   if (!q) throw notFound("Quotation not found");
   if (q.project) await assertProjectAccess(user, q.project);
   if (q.status === "superseded") throw badRequest("This version is superseded – work on the latest version");
-  if (status === "approved" && !user.permissions.includes("*") && !user.permissions.includes("quotations:approve")) {
-    throw badRequest("Only managers/admin can approve quotations");
+  const wasApproved = q.status === "approved";
+  const canApprove = can(user.permissions, "quotations:approve");
+  if (status === "approved" && !canApprove) throw forbidden("Only managers/admin can approve quotations");
+  if (wasApproved && status !== "approved" && !canApprove) {
+    throw forbidden("This quotation is approved. Only managers/admin can change its status – or create a revision instead.");
   }
   q.status = status;
   if (clientFeedback) q.clientFeedback = clientFeedback;
@@ -260,8 +272,9 @@ export const quotationStatus = api({ perm: "quotations:write" }, async ({ req, p
   } else q.isFinal = false;
   await q.save();
   if (q.project) {
-    await recomputeContractValue(q.project);
-    if (status === "approved" && q.type === "working") {
+    // only approving / un-approving changes which quotations count towards the contract value
+    if (wasApproved !== (status === "approved")) await recomputeContractValue(q.project);
+    if (status === "approved" && !wasApproved && q.type === "working") {
       await advanceStageIf(q.project, ["site_visit", "design_2d", "design_3d", "elevation", "quotation"], "contractor_selection", user.id, `Quotation ${q.quoteNo} v${q.version} approved`);
     }
   }

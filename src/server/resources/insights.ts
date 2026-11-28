@@ -19,29 +19,46 @@ import {
 } from "../models";
 import { accessibleProjectIds, projectFilter, round2 } from "../services/core";
 import { materialFromStockByProject } from "../services/money";
-import { monthlyCashflow } from "./finance";
+import { IST_TZ, istParts, istStartOfDay, istStartOfMonth, parseIstDate } from "../services/numbering";
 
-const startOfDay = (d = new Date()) => {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-};
-const addDays = (d: Date, n: number) => {
-  const x = new Date(d);
-  x.setDate(x.getDate() + n);
-  return x;
-};
+// All day / month boundaries below are India time (see services/numbering), never the server TZ.
+const DAY_MS = 86_400_000;
+const addDays = (d: Date, n: number) => new Date(d.getTime() + n * DAY_MS); // IST has no DST
 const sum = async (model: any, match: any) => {
   const [r] = await model.aggregate([{ $match: match }, { $group: { _id: null, t: { $sum: "$amount" } } }]);
   return round2(r?.t ?? 0);
 };
 
+/** Received (client payments) vs spent (expenses) per India month, for dates in [from, to). At most 60 months (the latest). */
+async function cashflowByMonth(from: Date, to: Date, projectIds: Types.ObjectId[] | null) {
+  const pm = projectIds ? { project: { $in: projectIds } } : {};
+  const agg = (model: any) =>
+    model.aggregate([
+      { $match: { date: { $gte: from, $lt: to }, ...pm } },
+      { $group: { _id: { $dateToString: { date: "$date", format: "%Y-%m", timezone: IST_TZ } }, t: { $sum: "$amount" } } },
+    ]);
+  const [inn, out] = await Promise.all([agg(Payment), agg(Expense)]);
+  const I = new Map(inn.map((r: any) => [r._id, r.t]));
+  const O = new Map(out.map((r: any) => [r._id, r.t]));
+  const first = istParts(from);
+  const last = istParts(new Date(to.getTime() - 1));
+  const months = (last.year - first.year) * 12 + (last.month - first.month) + 1;
+  const res = [];
+  for (let i = Math.max(0, months - 60); i < months; i++) {
+    const d = new Date(Date.UTC(first.year, first.month + i, 1));
+    const k = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    res.push({ month: k, received: round2(Number(I.get(k) ?? 0)), spent: round2(Number(O.get(k) ?? 0)) });
+  }
+  return res;
+}
+
 export const dashboard = api({ perm: "dashboard:read" }, async ({ user }) => {
   const P = user.permissions;
   const uid = new Types.ObjectId(user.id);
-  const today = startOfDay();
+  const now = new Date();
+  const today = istStartOfDay(now); // 00:00 IST today
   const tomorrow = addDays(today, 1);
-  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+  const monthStart = istStartOfMonth(now); // 00:00 IST on the 1st
   const out: Record<string, any> = {};
 
   // ---- my work (everyone)
@@ -129,16 +146,33 @@ export const dashboard = api({ perm: "dashboard:read" }, async ({ user }) => {
       sum(Payment, { ...pm, date: { $gte: monthStart } }),
       sum(Expense, { date: { $gte: monthStart } }),
       Payment.aggregate([{ $match: { project: { $in: live.map((p) => p._id) } } }, { $group: { _id: "$project", t: { $sum: "$amount" } } }]),
-      PurchaseOrder.aggregate([{ $match: { status: { $nin: ["cancelled", "draft"] } } }, { $group: { _id: null, t: { $sum: { $subtract: ["$total", "$paidAmount"] } } } }]),
+      // per PO, never let one over-paid PO hide another PO's dues
+      PurchaseOrder.aggregate([
+        { $match: { status: { $nin: ["cancelled", "draft"] } } },
+        { $group: { _id: null, t: { $sum: { $max: [0, { $subtract: [{ $ifNull: ["$total", 0] }, { $ifNull: ["$paidAmount", 0] }] }] } } } },
+      ]),
     ]);
     const rec = new Map(recBySite.map((r: any) => [String(r._id), r.t]));
     // per site, never let one over-paid site hide another site's dues
     const receivables = live.reduce((a, p) => a + Math.max(0, (p.contractValue ?? 0) - Number(rec.get(String(p._id)) ?? 0)), 0);
+    // amount = what is still to collect on the milestone (a part payment is already taken off)
     const dueMilestones = live
       .flatMap((p) =>
         (p.paymentSchedule ?? [])
-          .filter((m: any) => m.status === "due" && m.amount > 0)
-          .map((m: any) => ({ projectId: String(p._id), projectNo: p.projectNo, project: p.name, client: p.client?.name, phone: p.client?.phone, milestone: m.name, amount: m.amount, dueDate: m.dueDate ?? null }))
+          .map((m: any) => ({ m, left: round2((m.amount ?? 0) - (m.paidAmount ?? 0)) }))
+          .filter(({ m, left }: any) => m.status === "due" && left > 0)
+          .map(({ m, left }: any) => ({
+            projectId: String(p._id),
+            projectNo: p.projectNo,
+            project: p.name,
+            client: p.client?.name,
+            phone: p.client?.phone,
+            milestone: m.name,
+            amount: left,
+            milestoneAmount: m.amount ?? 0,
+            paidAmount: round2(m.paidAmount ?? 0),
+            dueDate: m.dueDate ?? null,
+          }))
       )
       .sort((a, b) => b.amount - a.amount)
       .slice(0, 8);
@@ -148,7 +182,7 @@ export const dashboard = api({ perm: "dashboard:read" }, async ({ user }) => {
       receivables: round2(receivables),
       vendorPayables: round2(poDue[0]?.t ?? 0),
       dueMilestones,
-      cashflow: await monthlyCashflow(6, ids),
+      cashflow: await cashflowByMonth(istStartOfMonth(now, -5), istStartOfMonth(now, 1), ids), // last 6 India months
     };
   }
 
@@ -176,8 +210,13 @@ export const dashboard = api({ perm: "dashboard:read" }, async ({ user }) => {
 /* --------------------------------- Reports ------------------------------- */
 export const reports = api({ perm: "reports:read" }, async ({ req, user }) => {
   const sp = req.nextUrl.searchParams;
-  const from = sp.get("from") ? new Date(sp.get("from")!) : new Date(new Date().getFullYear(), new Date().getMonth() - 11, 1);
-  const to = sp.get("to") ? addDays(new Date(sp.get("to")!), 1) : addDays(startOfDay(), 1);
+  const now = new Date();
+  // "YYYY-MM-DD" = that India day; `to` is inclusive, so query up to 00:00 IST of the next day
+  const fromQ = parseIstDate(sp.get("from"));
+  const toQ = parseIstDate(sp.get("to"));
+  const hasRange = Boolean(fromQ || toQ); // no range → sites are lifetime figures, cash flow the last 12 months
+  const from = fromQ ?? istStartOfMonth(now, -11);
+  const to = toQ ? addDays(toQ, 1) : addDays(istStartOfDay(now), 1);
   const range = { $gte: from, $lt: to };
   const ids = await accessibleProjectIds(user);
   const pm = ids ? { project: { $in: ids } } : {};
@@ -190,8 +229,8 @@ export const reports = api({ perm: "reports:read" }, async ({ req, user }) => {
     ]),
     Lead.aggregate([
       { $match: { createdAt: range } },
-      { $group: { _id: { y: { $year: "$createdAt" }, m: { $month: "$createdAt" } }, total: { $sum: 1 }, won: { $sum: { $cond: [{ $eq: ["$status", "won"] }, 1, 0] } } } },
-      { $sort: { "_id.y": 1, "_id.m": 1 } },
+      { $group: { _id: { $dateToString: { date: "$createdAt", format: "%Y-%m", timezone: IST_TZ } }, total: { $sum: 1 }, won: { $sum: { $cond: [{ $eq: ["$status", "won"] }, 1, 0] } } } },
+      { $sort: { _id: 1 } },
     ]),
     Lead.aggregate([{ $match: { createdAt: range, status: "lost", lostReason: { $nin: [null, ""] } } }, { $group: { _id: "$lostReason", n: { $sum: 1 } } }, { $sort: { n: -1 } }, { $limit: 10 }]),
     Expense.aggregate([{ $match: { date: range, ...pm } }, { $group: { _id: "$category", t: { $sum: "$amount" } } }, { $sort: { t: -1 } }]),
@@ -203,7 +242,28 @@ export const reports = api({ perm: "reports:read" }, async ({ req, user }) => {
           _id: "$assignedTo",
           total: { $sum: 1 },
           done: { $sum: { $cond: [{ $eq: ["$status", "done"] }, 1, 0] } },
-          late: { $sum: { $cond: [{ $and: [{ $eq: ["$status", "done"] }, { $gt: ["$completedAt", "$dueDate"] }, { $ne: ["$dueDate", null] }] }, 1, 0] } },
+          // late = finished on a later India calendar day than the due day (due day itself is on time)
+          late: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ["$status", "done"] },
+                    { $eq: [{ $type: "$dueDate" }, "date"] },
+                    { $eq: [{ $type: "$completedAt" }, "date"] },
+                    {
+                      $gt: [
+                        { $dateToString: { date: "$completedAt", format: "%Y-%m-%d", timezone: IST_TZ } },
+                        { $dateToString: { date: "$dueDate", format: "%Y-%m-%d", timezone: IST_TZ } },
+                      ],
+                    },
+                  ],
+                },
+                1,
+                0,
+              ],
+            },
+          },
         },
       },
       { $lookup: { from: "users", localField: "_id", foreignField: "_id", as: "u" } },
@@ -212,19 +272,28 @@ export const reports = api({ perm: "reports:read" }, async ({ req, user }) => {
       { $sort: { done: -1 } },
     ]),
     (async () => {
-      const projects = await Project.find(ids ? { _id: { $in: ids } } : {}).select("name projectNo stage status progress contractValue startDate expectedEndDate actualEndDate").lean<any[]>();
+      const projects = await Project.find(ids ? { _id: { $in: ids } } : {}).select("name projectNo stage status progress contractValue startDate expectedEndDate actualEndDate createdAt closedAt").lean<any[]>();
       const pids = projects.map((p) => p._id);
-      const g = (m: any) => m.aggregate([{ $match: { project: { $in: pids } } }, { $group: { _id: "$project", t: { $sum: "$amount" } } }]);
-      const [r, e, stock] = await Promise.all([g(Payment), g(Expense), materialFromStockByProject(pids)]);
+      // with a range: money received / spent / issued from stock within the period only
+      const inRange = hasRange ? { date: range } : {};
+      const g = (m: any) => m.aggregate([{ $match: { project: { $in: pids }, ...inRange } }, { $group: { _id: "$project", t: { $sum: "$amount" } } }]);
+      const [r, e, stock] = await Promise.all([g(Payment), g(Expense), materialFromStockByProject(pids, hasRange ? range : undefined)]);
       const R = new Map(r.map((x: any) => [String(x._id), x.t]));
       const E = new Map(e.map((x: any) => [String(x._id), x.t]));
-      return projects.map((p) => {
+      const rows = projects.map((p) => {
         const received = round2(Number(R.get(String(p._id)) ?? 0));
         const spent = round2(Number(E.get(String(p._id)) ?? 0));
         const materialFromStock = stock.get(String(p._id)) ?? 0;
         const cost = round2(spent + materialFromStock);
         const margin = round2(received - cost);
         return { id: String(p._id), projectNo: p.projectNo, name: p.name, stage: p.stage, status: p.status, progress: p.progress, contractValue: p.contractValue, received, spent, materialFromStock, cost, margin, marginPct: received ? Math.round((margin / received) * 100) : 0, startDate: p.startDate, expectedEndDate: p.expectedEndDate, actualEndDate: p.actualEndDate };
+      });
+      if (!hasRange) return rows;
+      // only sites that had money movement in the period, or were running during it
+      return rows.filter((row, i) => {
+        const p = projects[i];
+        const running = p.status !== "cancelled" && (!p.createdAt || new Date(p.createdAt) < to) && (!p.closedAt || new Date(p.closedAt) >= from);
+        return running || row.received !== 0 || row.spent !== 0 || row.materialFromStock !== 0;
       });
     })(),
   ]);
@@ -233,13 +302,14 @@ export const reports = api({ perm: "reports:read" }, async ({ req, user }) => {
     range: { from, to: addDays(to, -1) },
     leads: {
       bySource: leadSources.map((s: any) => ({ source: s._id, total: s.total, won: s.won, lost: s.lost, rate: s.total ? Math.round((s.won / s.total) * 100) : 0 })),
-      monthly: leadMonthly.map((m: any) => ({ month: `${m._id.y}-${String(m._id.m).padStart(2, "0")}`, total: m.total, won: m.won })),
+      monthly: leadMonthly.map((m: any) => ({ month: m._id, total: m.total, won: m.won })),
       lostReasons: lostReasons.map((r: any) => ({ reason: r._id, count: r.n })),
     },
     finance: {
       expenseByCategory: expenseByCat.map((e: any) => ({ category: e._id, amount: round2(e.t) })),
       receiptsByMode: receiptsByMode.map((e: any) => ({ mode: e._id, amount: round2(e.t), count: e.n })),
-      cashflow: await monthlyCashflow(12, ids),
+      // chosen period, month by month (India months); default = last 12 months incl. this one
+      cashflow: hasRange ? await cashflowByMonth(from, to, ids) : await cashflowByMonth(istStartOfMonth(now, -11), istStartOfMonth(now, 1), ids),
     },
     team: taskByUser.map((t: any) => ({ ...t, id: String(t._id), _id: undefined })),
     sites,

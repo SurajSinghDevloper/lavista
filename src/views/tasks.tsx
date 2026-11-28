@@ -1,7 +1,7 @@
 "use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { CalendarDays, Check, MessageSquare, Plus, Repeat, Send, Trash2 } from "lucide-react";
+import { CalendarDays, Check, MessageSquare, Pencil, Plus, Repeat, Send, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth";
 import { DataTable, FilterBar, Pagination, SearchBox } from "@/components/data-table";
@@ -37,7 +37,10 @@ export function TaskDrawer({ id, open, onClose, defaults, onSaved }: { id?: stri
   const [checklist, setChecklist] = useState<any[]>([]);
   const [files, setFiles] = useState<any[]>([]);
   const [newItem, setNewItem] = useState("");
+  const [editingItem, setEditingItem] = useState<number | null>(null); // index of the checklist line being renamed
   const [comment, setComment] = useState("");
+  const [sending, setSending] = useState(false);
+  const [editComment, setEditComment] = useState<{ id: string; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const isNew = !id;
   const manager = isNew || can("tasks:all") || task?.assignedBy?.id === user?.id;
@@ -82,10 +85,35 @@ export function TaskDrawer({ id, open, onClose, defaults, onSaved }: { id?: stri
   };
 
   const addComment = async () => {
-    if (!comment.trim()) return;
+    if (!comment.trim() || sending) return; // Enter + click must not post the same comment twice
+    setSending(true);
     try {
       await api.post(`/tasks/${id}/comments`, { text: comment });
       setComment("");
+      mutate();
+    } catch (e) {
+      toast.error(e);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const commentId = (c: any) => c.id ?? c._id;
+  const saveComment = async () => {
+    if (!editComment) return;
+    if (!editComment.text.trim()) return toast.error("The comment can't be empty");
+    try {
+      await api.patch(`/tasks/${id}/comments/${editComment.id}`, { text: editComment.text.trim() });
+      setEditComment(null);
+      mutate();
+    } catch (e) {
+      toast.error(e);
+    }
+  };
+  const deleteComment = async (c: any) => {
+    if (!(await confirm({ title: "Delete this comment?", message: c.text, danger: true, confirmText: "Delete" }))) return;
+    try {
+      await api.del(`/tasks/${id}/comments/${commentId(c)}`);
       mutate();
     } catch (e) {
       toast.error(e);
@@ -149,9 +177,21 @@ export function TaskDrawer({ id, open, onClose, defaults, onSaved }: { id?: stri
               {checklist.map((c, i) => (
                 <li key={c._id ?? c.id ?? i} className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-stone-50">
                   <input type="checkbox" className="size-4 accent-brand-600" checked={!!c.done} onChange={(e) => setChecklist((l) => l.map((x, k) => (k === i ? { ...x, done: e.target.checked } : x)))} />
-                  <span className={cx("flex-1 text-sm", c.done && "text-stone-400 line-through")}>{c.text}</span>
+                  {manager && editingItem === i ? (
+                    <input
+                      className="input flex-1 py-1 text-sm"
+                      autoFocus
+                      value={c.text}
+                      onChange={(e) => setChecklist((l) => l.map((x, k) => (k === i ? { ...x, text: e.target.value } : x)))}
+                      onBlur={() => (setEditingItem(null), !c.text.trim() && setChecklist((l) => l.filter((_, k) => k !== i)))}
+                      onKeyDown={(e) => (e.key === "Enter" || e.key === "Escape") && (e.preventDefault(), (e.target as HTMLInputElement).blur())}
+                    />
+                  ) : (
+                    <span className={cx("flex-1 text-sm", c.done && "text-stone-400 line-through")}>{c.text}</span>
+                  )}
                   {c.doneBy?.name && <span className="text-[10px] text-muted">{c.doneBy.name}</span>}
-                  {manager && <button className="text-stone-300 hover:text-red-600" onClick={() => setChecklist((l) => l.filter((_, k) => k !== i))}><Trash2 className="size-3.5" /></button>}
+                  {manager && editingItem !== i && <button className="text-stone-300 hover:text-ink" title="Edit text" onClick={() => setEditingItem(i)}><Pencil className="size-3.5" /></button>}
+                  {manager && <button className="text-stone-300 hover:text-red-600" title="Remove" onClick={() => (setEditingItem(null), setChecklist((l) => l.filter((_, k) => k !== i)))}><Trash2 className="size-3.5" /></button>}
                 </li>
               ))}
             </ul>
@@ -172,19 +212,41 @@ export function TaskDrawer({ id, open, onClose, defaults, onSaved }: { id?: stri
             <div>
               <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold"><MessageSquare className="size-4" /> Comments</h4>
               <ul className="space-y-3">
-                {(task?.comments ?? []).map((c: any) => (
-                  <li key={c._id ?? c.id} className="flex gap-2">
-                    <Avatar name={c.by?.name} size="sm" />
-                    <div className="flex-1 rounded-lg bg-stone-50 px-3 py-2">
-                      <p className="text-xs"><span className="font-semibold">{c.by?.name}</span> <span className="text-muted">{relative(c.at)}</span></p>
-                      <p className="whitespace-pre-line text-sm">{c.text}</p>
-                    </div>
-                  </li>
-                ))}
+                {(task?.comments ?? []).map((c: any) => {
+                  const mine = !!user && c.by?.id === user.id;
+                  const editingThis = editComment?.id === commentId(c);
+                  return (
+                    <li key={commentId(c)} className="group flex gap-2">
+                      <Avatar name={c.by?.name} size="sm" />
+                      <div className="flex-1 rounded-lg bg-stone-50 px-3 py-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="text-xs"><span className="font-semibold">{c.by?.name}</span> <span className="text-muted">{relative(c.at)}</span></p>
+                          {!editingThis && (mine || can("tasks:all")) && (
+                            <span className="flex gap-1.5 sm:opacity-0 sm:transition sm:group-hover:opacity-100">
+                              {mine && <button className="text-stone-400 hover:text-ink" title="Edit comment" onClick={() => setEditComment({ id: commentId(c), text: c.text ?? "" })}><Pencil className="size-3.5" /></button>}
+                              <button className="text-stone-400 hover:text-red-600" title="Delete comment" onClick={() => deleteComment(c)}><Trash2 className="size-3.5" /></button>
+                            </span>
+                          )}
+                        </div>
+                        {editingThis ? (
+                          <div className="mt-1 space-y-1.5">
+                            <textarea className="input text-sm" rows={2} autoFocus value={editComment?.text ?? ""} onChange={(e) => setEditComment((x) => x && { ...x, text: e.target.value })} />
+                            <div className="flex justify-end gap-1">
+                              <Button size="xs" variant="secondary" onClick={() => setEditComment(null)}>Cancel</Button>
+                              <Button size="xs" onClick={saveComment}>Save</Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="whitespace-pre-line text-sm">{c.text}</p>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
               <div className="mt-3 flex gap-2">
                 <input className="input" placeholder="Write an update…" value={comment} onChange={(e) => setComment(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addComment()} />
-                <Button icon={<Send className="size-4" />} onClick={addComment}>Send</Button>
+                <Button icon={<Send className="size-4" />} loading={sending} onClick={addComment}>Send</Button>
               </div>
             </div>
           )}
@@ -222,7 +284,11 @@ const columns = [
 
 function Board({ params, onOpen }: { params: any; onOpen: (id: string) => void }) {
   const toast = useToast();
-  const { rows, mutate } = useList("/tasks", { ...params, limit: 200, status: undefined });
+  // open tasks and finished ones are loaded separately, so a pile of done tasks can never push open ones off the board
+  const open = useList("/tasks", { ...params, limit: 200, status: "todo,in_progress,review,blocked", sort: "dueDate" });
+  const done = useList("/tasks", { ...params, limit: 30, status: "done", sort: "-updatedAt" }); // most recently finished
+  const rows = [...open.rows, ...done.rows];
+  const mutate = () => (open.mutate(), done.mutate());
   const [drag, setDrag] = useState<string | null>(null);
   const cols = TASK_STATUS.filter((s) => s.value !== "cancelled");
   const move = async (id: string, status: string) => {
@@ -242,7 +308,7 @@ function Board({ params, onOpen }: { params: any; onOpen: (id: string) => void }
           <div key={c.value} className="flex w-72 shrink-0 flex-col rounded-xl bg-stone-100/80 p-2" onDragOver={(e) => e.preventDefault()} onDrop={() => drag && move(drag, c.value)}>
             <div className="mb-2 flex items-center justify-between px-1">
               <StatusBadge options={TASK_STATUS} value={c.value} />
-              <span className="text-xs text-muted">{items.length}</span>
+              <span className="text-xs text-muted" title={c.value === "done" ? "Most recently finished tasks" : undefined}>{c.value === "done" && done.meta && done.meta.total > items.length ? `latest ${items.length} of ${done.meta.total}` : items.length}</span>
             </div>
             <div className="flex min-h-24 flex-col gap-2">
               {items.map((t) => (

@@ -21,7 +21,9 @@ import {
   PhoneCall,
   Receipt,
   Search,
+  ListChecks,
   Settings,
+  ShieldCheck,
   ShoppingCart,
   Truck,
   User,
@@ -39,7 +41,7 @@ import { relative } from "@/lib/format";
 import type { Permission } from "@/lib/permissions";
 import { invalidate, useList, useOne } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
-import { useAuth } from "./auth";
+import { OptionsReady, useAuth } from "./auth";
 import { Avatar, Button, cx, IconButton, Menu, MenuItem, useToast } from "./ui";
 
 type NavItem = { href: string; label: string; icon: LucideIcon; perm?: Permission | Permission[] };
@@ -97,6 +99,8 @@ const NAV: { group: string; items: NavItem[] }[] = [
     items: [
       { href: "/team", label: "Team Members", icon: Users, perm: "users:read" },
       { href: "/team/attendance", label: "Attendance", icon: UserCheck, perm: "attendance:read" },
+      { href: "/team/roles", label: "Roles & Permissions", icon: ShieldCheck, perm: "users:read" },
+      { href: "/settings/options", label: "Dropdown Options", icon: ListChecks, perm: "settings:write" },
       { href: "/settings", label: "Settings", icon: Settings, perm: "settings:write" },
     ],
   },
@@ -401,7 +405,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div>
           )}
           {loading && !user && <div className="fixed inset-x-0 top-0 z-50 h-0.5 animate-pulse bg-brand-400" />}
-          {children}
+          <OptionsReady>{children}</OptionsReady>
         </main>
       </div>
     </div>

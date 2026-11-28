@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Types } from "mongoose";
 import { z } from "zod";
-import { DELIVERY_LOCATIONS, MATERIAL_CATEGORIES, PO_STATUS, TRADES, UNITS, values } from "@/lib/constants";
+import { DELIVERY_LOCATIONS, PO_STATUS, labelOf, values } from "@/lib/constants";
 import { can } from "@/lib/permissions";
 import { crud } from "../crud";
 import { api, assertId, badRequest, forbidden, notFound, parseBody } from "../http";
@@ -9,22 +9,8 @@ import { Expense, GRN, Material, MaterialRequest, Project, PurchaseOrder, StockT
 import { assertProjectAccess, audit, computeItems, nextNumber, notify, projectFilter, round2 } from "../services/core";
 import { getSetting } from "../services/settings";
 import { siteReceipt, stockIn, stockOut } from "../services/stock";
-import {
-  aliasId,
-  zBool,
-  zDate,
-  zEmail,
-  zId,
-  zLineItem,
-  zMoney,
-  zNum,
-  zOptEnum,
-  zOptPhone,
-  zRef,
-  zRefs,
-  zStr,
-  zText,
-} from "../validators";
+import { aliasId, zBool, zDate, zEmail, zId, zLineItem, zMoney, zNum, zOptEnum, zOption, zOptOption, zOptPhone, zRef, zRefs, zStr, zText } from "../validators";
+import { rolesWith } from "../services/roles";
 import { advanceStageIf } from "./projects";
 
 /* --------------------------------- Vendors ------------------------------- */
@@ -41,7 +27,7 @@ const vendorBase = {
   address: zText(500),
   city: zText(100),
   gstin: zText(20),
-  categories: z.array(z.enum(values(MATERIAL_CATEGORIES))).max(20).optional(),
+  categories: z.array(zOption).max(20).optional(),
   paymentTerms: zText(300),
   creditDays: zNum,
   bank,
@@ -71,8 +57,8 @@ export const vendors = crud({
 const materialBase = {
   code: zText(30),
   name: zStr(200),
-  category: z.enum(values(MATERIAL_CATEGORIES)),
-  unit: z.enum(values(UNITS)).default("nos"),
+  category: zOption,
+  unit: zOption.default("nos"),
   brand: zText(100),
   specification: zText(1000),
   hsn: zText(20),
@@ -177,6 +163,15 @@ const moveBody = z.object({
 export const issueStock = api({ perm: "inventory:write" }, async ({ req, user, ip }) => {
   const body = await parseBody(req, moveBody);
   await assertProjectAccess(user, body.project);
+  if (body.materialRequest) {
+    // only an approved request of this same site can be served from stock
+    const req0 = await MaterialRequest.findById(body.materialRequest).select("project status mrNo").lean<any>();
+    if (!req0) throw notFound("This material request could not be found. It may have been deleted.");
+    if (String(req0.project) !== String(body.project)) throw badRequest(`${req0.mrNo} belongs to another site – issue it to that site, or issue without the request.`);
+    if (!["approved", "ordered", "issued"].includes(req0.status)) {
+      throw badRequest(req0.status === "pending" ? `${req0.mrNo} is still waiting for approval.` : `${req0.mrNo} is ${req0.status === "rejected" ? "rejected" : "already fulfilled"}, so nothing more can be issued against it.`);
+    }
+  }
   const refNo = await nextNumber("ISS");
   const done: { material: string; qty: number }[] = [];
   try {
@@ -210,6 +205,26 @@ export const issueStock = api({ perm: "inventory:write" }, async ({ req, user, i
 export const returnStock = api({ perm: "inventory:write" }, async ({ req, user, ip }) => {
   const body = await parseBody(req, moveBody);
   await assertProjectAccess(user, body.project);
+  // a site can only send back what it got (issued from the factory or delivered direct) and hasn't returned yet
+  const wanted = new Map<string, number>();
+  for (const it of body.items) wanted.set(it.material, round2((wanted.get(it.material) ?? 0) + it.qty));
+  const mids = [...wanted.keys()].map((m) => new Types.ObjectId(m));
+  const [held, mats] = await Promise.all([
+    StockTxn.aggregate([
+      { $match: { project: new Types.ObjectId(body.project), material: { $in: mids }, type: { $in: ["issue", "return", "site_receipt"] } } },
+      // issue rows are stored negative (factory out), returns positive (factory in), site receipts positive
+      { $group: { _id: "$material", qty: { $sum: { $cond: [{ $eq: ["$type", "site_receipt"] }, "$qty", { $multiply: ["$qty", -1] }] } } } },
+    ]),
+    Material.find({ _id: { $in: mids } }).select("name unit").lean<any[]>(),
+  ]);
+  const atSite = new Map<string, number>(held.map((h: any) => [String(h._id), round2(h.qty)]));
+  for (const [mid, qty] of wanted) {
+    const left = Math.max(0, atSite.get(mid) ?? 0);
+    if (qty > left + 0.0005) {
+      const m = mats.find((x) => String(x._id) === mid);
+      throw badRequest(`${m?.name ?? "This material"}: only ${left}${m?.unit ? ` ${m.unit}` : ""} was issued or delivered to this site and not returned yet, so ${qty} can't be returned.`);
+    }
+  }
   const refNo = await nextNumber("RET");
   for (const it of body.items) {
     await stockIn(it.material, it.qty, 0, { refType: "return", refNo, project: body.project, date: body.date ?? undefined, notes: body.notes, userId: user.id }, "return");
@@ -242,12 +257,43 @@ const mrItem = z.preprocess(aliasId, z.object({
 }));
 const mrBase = {
   project: zId,
-  trade: zOptEnum(values(TRADES)),
+  trade: zOptOption,
   requiredBy: zDate,
   priority: z.enum(["normal", "urgent"]).optional(),
   items: z.array(mrItem).min(1).max(200),
   notes: zText(2000),
 };
+
+const MR_ITEMS_LOCKED =
+  "Items and quantities can't be changed after the request is approved – stock may already be issued or ordered against them. You can still change the required-by date, priority and notes.";
+
+/** Approved / PO-raised / issued requests: only dates, priority and notes (incl. per-item notes) may change. */
+function limitApprovedMrEdit(data: any, existing: any) {
+  if (data.trade !== undefined && (data.trade || "") !== (existing.trade || "")) {
+    throw badRequest("The work type can't be changed after the request is approved.");
+  }
+  if (data.items) {
+    const old = new Map<string, any>(existing.items.map((i: any) => [String(i._id), i]));
+    if (data.items.length !== existing.items.length) throw badRequest(MR_ITEMS_LOCKED);
+    const notes = new Map<string, string>();
+    for (const it of data.items) {
+      const o = it._id ? old.get(String(it._id)) : null;
+      const same =
+        o &&
+        it.description === o.description &&
+        Number(it.qty) === Number(o.qty) &&
+        (it.unit || "nos") === (o.unit || "nos") &&
+        String(it.material ?? "") === String(o.material ?? "") &&
+        (it.category || "") === (o.category || "");
+      if (!same) throw badRequest(MR_ITEMS_LOCKED);
+      notes.set(String(it._id), it.notes ?? "");
+    }
+    // keep issued / ordered quantities – only the notes change
+    data.items = existing.items.map((i: any) => ({ ...i.toObject(), notes: notes.get(String(i._id)) ?? i.notes }));
+  }
+  for (const k of Object.keys(data)) if (!["requiredBy", "priority", "notes", "items"].includes(k)) delete data[k];
+  return data;
+}
 
 export const materialRequests = crud({
   model: MaterialRequest,
@@ -271,7 +317,7 @@ export const materialRequests = crud({
   label: (d) => d.mrNo,
   afterCreate: async (doc, ctx) => {
     const p = await Project.findById(doc.project).select("manager projectNo");
-    const store = await User.find({ role: { $in: ["store", "admin"] }, isActive: true }).select("_id").lean();
+    const store = await User.find({ role: { $in: await rolesWith("inventory:write") }, isActive: true }).select("_id").lean();
     await notify(
       [p?.manager, ...store.map((s: any) => s._id)],
       { title: `Material request ${doc.mrNo}`, message: `${p?.projectNo}: ${doc.items.length} item(s)${doc.priority === "urgent" ? " – URGENT" : ""}`, link: "/procurement/requests", type: "material" },
@@ -279,8 +325,23 @@ export const materialRequests = crud({
     );
   },
   beforeUpdate: (data, existing) => {
-    if (existing.status !== "pending") throw badRequest("Only pending requests can be edited");
-    return data;
+    if (existing.status === "pending") return data;
+    if (existing.status === "rejected") {
+      // a corrected request goes back to the approver
+      data.status = "pending";
+      existing.rejectionReason = undefined;
+      existing.approvedBy = undefined;
+      existing.approvedAt = undefined;
+      return data;
+    }
+    if (["approved", "ordered", "issued"].includes(existing.status)) return limitApprovedMrEdit(data, existing);
+    throw badRequest("This request is already fulfilled, so it can't be edited any more.");
+  },
+  afterUpdate: async (doc, before, ctx) => {
+    if (before.status === "rejected" && doc.status === "pending") {
+      const p = await Project.findById(doc.project).select("manager projectNo");
+      await notify([p?.manager], { title: `Material request ${doc.mrNo} resubmitted`, message: `${p?.projectNo}: corrected and sent again for approval`, link: "/procurement/requests", type: "material" }, ctx.user.id);
+    }
   },
   beforeDelete: (doc) => {
     // once approved, stock may have been issued / POs raised against it – keep the trail
@@ -306,12 +367,53 @@ export const decideMaterialRequest = api({ perm: "material_requests:approve" }, 
 });
 
 /* ----------------------------- Purchase orders --------------------------- */
+/** The request line a PO line was ordered for (same rule as when the PO was raised). */
+const mrLineFor = (mr: any, it: any) => mr.items.find((x: any) => (it.material && String(x.material) === String(it.material)) || x.description === it.description);
+
+/**
+ * A PO raised against a material request was cancelled or deleted: take its quantities off the
+ * request's "ordered" and put the request back to where it really is, so it can be ordered again.
+ */
+async function releaseMrOrder(po: any) {
+  if (!po?.materialRequest) return;
+  const mr = await MaterialRequest.findById(po.materialRequest);
+  if (!mr || !["ordered", "issued", "fulfilled"].includes(mr.status)) return;
+  for (const it of po.items ?? []) {
+    const line = mrLineFor(mr, it);
+    if (line) line.orderedQty = Math.max(0, round2((line.orderedQty ?? 0) - (it.qty ?? 0)));
+  }
+  const covered = mr.items.every((x: any) => (x.issuedQty ?? 0) + (x.orderedQty ?? 0) + 1e-6 >= x.qty);
+  if (!(covered && mr.status === "fulfilled")) {
+    mr.status = mr.items.some((x: any) => (x.orderedQty ?? 0) > 0) ? "ordered" : mr.items.some((x: any) => (x.issuedQty ?? 0) > 0) ? "issued" : "approved";
+  }
+  await mr.save();
+}
+
+/** POs can only be raised against an approved request (or one already partly ordered / issued). */
+async function assertMrOrderable(mrId: unknown) {
+  if (!mrId) return;
+  const mr = await MaterialRequest.findById(mrId).select("status mrNo").lean<any>();
+  if (!mr) throw notFound("This material request could not be found. It may have been deleted.");
+  if (!["approved", "issued", "ordered"].includes(mr.status)) {
+    throw badRequest(mr.status === "pending" ? `${mr.mrNo} is still waiting for approval – approve it before ordering.` : `${mr.mrNo} is ${mr.status === "rejected" ? "rejected" : "already fulfilled"}, so a PO can't be raised against it.`);
+  }
+}
+
+/** Who may move a PO where by hand – "received" is only ever set by goods receipts (GRN). */
+const PO_MOVES: Record<string, string[]> = {
+  draft: ["ordered", "cancelled"],
+  ordered: ["draft", "cancelled"],
+  partially_received: ["cancelled"], // only possible when no GRN is left (checked below)
+  received: ["cancelled"],
+  cancelled: [],
+};
+
 const poBase = {
   vendor: zId,
   project: zRef,
   materialRequest: zRef,
   deliverTo: zOptEnum(values(DELIVERY_LOCATIONS)),
-  category: zOptEnum(values(MATERIAL_CATEGORIES)),
+  category: zOptOption,
   date: zDate,
   expectedDate: zDate,
   items: z.array(zLineItem).min(1).max(500),
@@ -356,6 +458,7 @@ export const purchaseOrders = crud({
   label: (d) => d.poNo,
   beforeCreate: async (data, ctx) => {
     if (data.project) await assertProjectAccess(ctx.user, data.project);
+    await assertMrOrderable(data.materialRequest);
     data.deliverTo ??= data.project ? "site" : "factory";
     data.terms ??= await getSetting<string>("poTerms");
     return { ...data, ...poTotals(data) };
@@ -363,9 +466,9 @@ export const purchaseOrders = crud({
   afterCreate: async (doc, ctx) => {
     if (doc.materialRequest) {
       const mr = await MaterialRequest.findById(doc.materialRequest);
-      if (mr) {
+      if (mr && ["approved", "issued", "ordered"].includes(mr.status)) {
         for (const it of doc.items) {
-          const line = mr.items.find((x: any) => (it.material && String(x.material) === String(it.material)) || x.description === it.description);
+          const line = mrLineFor(mr, it);
           if (line) line.orderedQty = round2((line.orderedQty ?? 0) + it.qty);
         }
         mr.status = "ordered";
@@ -378,14 +481,52 @@ export const purchaseOrders = crud({
     if (["received", "partially_received", "cancelled"].includes(existing.status) && data.items) {
       throw badRequest("Items cannot be changed after material is received / PO cancelled");
     }
+    if (data.status && data.status !== existing.status && !["draft", "ordered"].includes(existing.status)) {
+      throw badRequest("The status of this PO is updated automatically from the goods received against it.");
+    }
+    if (["received", "partially_received"].includes(existing.status)) {
+      const changed = (k: string) => data[k] !== undefined && String(data[k] ?? "") !== String(existing[k] ?? "");
+      if (["vendor", "project", "deliverTo", "materialRequest"].some(changed)) {
+        throw badRequest("Goods have already been received against this PO, so the vendor, site and delivery place can't be changed. You can still edit the dates, freight, terms and notes.");
+      }
+    }
+    if (data.items) data.items = keepReceivedQty(data.items, existing.items);
     const merged = { ...existing.toObject(), ...data };
     return data.items || data.freight !== undefined ? { ...data, ...poTotals(merged) } : data;
+  },
+  afterUpdate: async (doc, before) => {
+    // freight / item changes move the total – keep "paid / partly paid" right
+    if (doc.total !== before.total) await syncPoPayment(doc._id);
   },
   beforeDelete: async (doc) => {
     if (await GRN.exists({ purchaseOrder: doc._id })) throw badRequest("PO has GRNs – cancel it instead");
     if (await Expense.exists({ purchaseOrder: doc._id })) throw badRequest("PO has payments – cancel it instead");
   },
+  // a cancelled PO already gave its quantities back to the request
+  afterDelete: async (doc) => (doc.status !== "cancelled" ? releaseMrOrder(doc) : undefined),
 });
+
+/**
+ * Edited PO lines never lose what was already received against them (the editor doesn't send it):
+ * the received quantity follows the line by id, and a received line can't be removed or cut below it.
+ */
+function keepReceivedQty(items: any[], existingItems: any[]) {
+  const old = new Map<string, any>(existingItems.map((l: any) => [String(l._id), l]));
+  const kept = new Set<string>();
+  const next = items.map((it) => {
+    const o = it._id ? old.get(String(it._id)) : null;
+    const received = o?.receivedQty ?? 0;
+    if (o) kept.add(String(o._id));
+    if (received > 0 && Number(it.qty) + 1e-6 < received) {
+      throw badRequest(`${o.description}: ${received} ${o.unit ?? ""} has already been received, so the quantity can't be less than that.`);
+    }
+    return { ...it, receivedQty: received };
+  });
+  for (const l of existingItems) {
+    if ((l.receivedQty ?? 0) > 0 && !kept.has(String(l._id))) throw badRequest(`${l.description} has already been received, so it can't be removed from the PO.`);
+  }
+  return next;
+}
 
 export const poStatus = api({ perm: "purchase_orders:write" }, async ({ req, params, user, ip }) => {
   const id = assertId(params.id);
@@ -393,9 +534,18 @@ export const poStatus = api({ perm: "purchase_orders:write" }, async ({ req, par
   const po = await PurchaseOrder.findById(id);
   if (!po) throw notFound("PO not found");
   if (!["ordered", "cancelled", "draft"].includes(status)) throw badRequest("“Received” is set automatically when goods are received against this PO (GRN).");
+  if (status === po.status) return serialize(po.toJSON());
+  if (!(PO_MOVES[po.status] ?? []).includes(status)) {
+    throw badRequest(
+      po.status === "cancelled"
+        ? "A cancelled PO can't be reopened – create a new PO instead."
+        : `This PO is ${labelOf(PO_STATUS, po.status).toLowerCase()} – goods have been received against it, so it can't go back to ${labelOf(PO_STATUS, status).toLowerCase()}.`
+    );
+  }
   if (status === "cancelled" && (await GRN.exists({ purchaseOrder: po._id }))) throw badRequest("PO has GRNs and cannot be cancelled");
   po.status = status;
   await po.save();
+  if (status === "cancelled") await releaseMrOrder(po);
   await audit(user, "status", "Purchase order", po._id, `${po.poNo} → ${status}`, { project: po.project, ip });
   return serialize(po.toJSON());
 });
@@ -427,7 +577,7 @@ const grnBody = z.object({
   vendor: zRef,
   project: zRef,
   location: zOptEnum(values(DELIVERY_LOCATIONS)),
-  category: zOptEnum(values(MATERIAL_CATEGORIES)),
+  category: zOptOption,
   receivedAt: zDate,
   items: z.array(grnItem).min(1).max(500),
   vendorInvoiceNo: zText(50),
@@ -437,10 +587,32 @@ const grnBody = z.object({
   notes: zText(2000),
 });
 
+/** Header details only – quantities drive stock and PO balances, so corrections there are "delete & reverse". */
+const grnHeader = z.object({
+  vendorInvoiceNo: zText(50),
+  vendorInvoiceAmount: z.union([z.null(), zMoney]), // null = clear the amount
+  vehicleNo: zText(30),
+  notes: zText(2000),
+  receivedAt: zDate,
+  photos: zRefs,
+});
+
 export const grns = crud({
   model: GRN,
   resource: "grn",
   entity: "GRN",
+  updateSchema: grnHeader,
+  label: (d) => d.grnNo,
+  beforeUpdate: (data) => {
+    if (data.receivedAt === null) delete data.receivedAt; // the receipt date can be corrected, not removed
+    return data;
+  },
+  afterUpdate: async (doc, before) => {
+    // stock ledger entries of this GRN carry its date
+    if (doc.receivedAt && String(doc.receivedAt) !== String(before.receivedAt)) {
+      await StockTxn.updateMany({ refId: doc._id, refType: "grn" }, { $set: { date: doc.receivedAt } });
+    }
+  },
   search: ["grnNo", "vendorInvoiceNo", "items.description"],
   filters: { purchaseOrder: "id", vendor: "id", project: "id", location: "string", category: "list" },
   dateField: "receivedAt",
@@ -519,17 +691,59 @@ export const createGrn = api({ perm: "grn:write" }, async ({ req, user, ip }) =>
   return serialize((await GRN.findById(grn._id).populate([{ path: "vendor", select: "name" }, { path: "purchaseOrder", select: "poNo" }]).lean()));
 });
 
+/**
+ * Take a GRN's goods back out of factory stock. Checks every material first (so a shortage on one
+ * line can't leave the others half-reversed) and takes the GRN's value back out of the average cost.
+ */
+async function reverseFactoryGrn(grn: any, userId: string) {
+  const lines = new Map<string, { qty: number; value: number }>();
+  for (const it of grn.items) {
+    const accepted = Math.max(0, (it.receivedQty ?? 0) - (it.rejectedQty ?? 0));
+    if (!it.material || accepted <= 0) continue;
+    const k = String(it.material);
+    const l = lines.get(k) ?? { qty: 0, value: 0 };
+    lines.set(k, { qty: round2(l.qty + accepted), value: round2(l.value + accepted * (it.rate ?? 0)) });
+  }
+  if (!lines.size) return;
+  const mats = await Material.find({ _id: { $in: [...lines.keys()] } }).select("name unit stockQty avgCost").lean<any[]>();
+  for (const [mid, l] of lines) {
+    const m = mats.find((x) => String(x._id) === mid);
+    if (m && (m.stockQty ?? 0) + 0.0005 < l.qty) {
+      throw badRequest(`${grn.grnNo} can't be deleted: ${m.name} has only ${m.stockQty} ${m.unit ?? ""} left in factory stock, but this GRN brought in ${l.qty}. Some of it has been issued already – return it from the site or adjust stock first.`);
+    }
+  }
+  const done: [string, { qty: number; value: number }][] = [];
+  try {
+    for (const [mid, l] of lines) {
+      await stockOut(mid, l.qty, { refType: "grn_reversal", refId: grn._id, refNo: grn.grnNo, userId }, "adjust");
+      done.push([mid, l]);
+      // average cost without this GRN: (value now − this GRN's value) ÷ what is left
+      const m = await Material.findById(mid).select("stockQty avgCost");
+      if (m && (m.stockQty ?? 0) > 0) {
+        const before = round2((m.stockQty ?? 0) + l.qty);
+        const valueLeft = before * (m.avgCost ?? 0) - l.value;
+        let avg = valueLeft > 0 ? round2(valueLeft / m.stockQty) : null;
+        if (avg == null) {
+          // stock was mostly this GRN and has moved since – fall back to the last other purchase rate
+          const last = await StockTxn.findOne({ material: mid, type: "in", refId: { $ne: grn._id } }).sort("-date").select("rate").lean<any>();
+          avg = Math.min(m.avgCost ?? 0, last?.rate ?? m.avgCost ?? 0);
+        }
+        await Material.updateOne({ _id: mid }, { $set: { avgCost: avg } });
+      }
+    }
+  } catch (e) {
+    // someone issued stock at the same moment – put back what was already taken out
+    for (const [mid, l] of done) await stockIn(mid, l.qty, l.qty ? l.value / l.qty : 0, { refType: "rollback", refId: grn._id, refNo: grn.grnNo, userId }, "in");
+    throw e;
+  }
+}
+
 /** Delete a GRN and reverse its stock / PO effects. */
 export const deleteGrn = api({ perm: "grn:delete" }, async ({ params, user, ip }) => {
   const id = assertId(params.id);
   const grn = await GRN.findById(id);
   if (!grn) throw notFound("GRN not found");
-  if (grn.location === "factory") {
-    for (const it of grn.items) {
-      const accepted = Math.max(0, (it.receivedQty ?? 0) - (it.rejectedQty ?? 0));
-      if (it.material && accepted > 0) await stockOut(it.material, accepted, { refType: "grn_reversal", refNo: grn.grnNo, userId: user.id }, "adjust");
-    }
-  }
+  if (grn.location === "factory") await reverseFactoryGrn(grn, user.id);
   await StockTxn.deleteMany({ refId: grn._id, type: "site_receipt" });
   if (grn.purchaseOrder) {
     const po = await PurchaseOrder.findById(grn.purchaseOrder);

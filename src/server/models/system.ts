@@ -1,4 +1,3 @@
-import { FILE_CATEGORIES, values } from "@/lib/constants";
 import { Schema } from "mongoose";
 import { defineModel, makeSchema, ObjectId } from "./_base";
 
@@ -9,7 +8,7 @@ const FileSchema = makeSchema({
   thumbKey: String, // small WebP preview for images
   mimeType: { type: String, required: true },
   size: { type: Number, required: true },
-  category: { type: String, enum: values(FILE_CATEGORIES), default: "other", index: true },
+  category: { type: String, default: "other", index: true },
   caption: String,
   project: { type: ObjectId, ref: "Project", index: true },
   entityType: { type: String, index: true }, // e.g. "Design", "Task", "Lead"

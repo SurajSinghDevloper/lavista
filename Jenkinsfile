@@ -128,6 +128,7 @@ pipeline {
                       -e CORS_ORIGINS \
                       -e MAX_UPLOAD_MB \
                       -e APP_TIMEZONE \
+                      -e TZ="${APP_TIMEZONE}" \
                       -e LEAD_WEBHOOK_KEY \
                       -e META_VERIFY_TOKEN \
                       -e META_APP_SECRET \

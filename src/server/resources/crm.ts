@@ -1,40 +1,16 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Types } from "mongoose";
 import { z } from "zod";
-import {
-  DEFAULT_PAYMENT_SCHEDULE,
-  FOLLOWUP_STATUS,
-  FOLLOWUP_TYPES,
-  LEAD_PRIORITY,
-  LEAD_SOURCES,
-  LEAD_STATUS,
-  PROPERTY_CONFIGS,
-  PROPERTY_TYPES,
-  SITE_VISIT_STATUS,
-  values,
-} from "@/lib/constants";
+import { DEFAULT_PAYMENT_SCHEDULE, FOLLOWUP_STATUS, LEAD_PRIORITY, LEAD_STATUS, SITE_VISIT_STATUS, values } from "@/lib/constants";
 import { can } from "@/lib/permissions";
 import { crud } from "../crud";
 import { api, assertId, badRequest, conflict, notFound, parseBody, type Ctx } from "../http";
 import { Client, FileModel, FollowUp, Lead, Project, Quotation, SiteVisit, serialize } from "../models";
 import { audit, nextNumber, notify, projectFilter } from "../services/core";
+import { scheduleAmounts } from "../services/money";
 import { getSetting } from "../services/settings";
-import {
-  aliasId,
-  zDate,
-  zEmail,
-  zLocation,
-  zMoney,
-  zNum,
-  zOptEnum,
-  zOptPhone,
-  zPhone,
-  zRef,
-  zRefs,
-  zStr,
-  zTags,
-  zText,
-} from "../validators";
+import { aliasId, zDate, zEmail, zLocation, zMoney, zNum, zOptEnum, zOptOption, zOptPhone, zPhone, zRef, zRefs, zStr, zTags, zText } from "../validators";
+import { recomputeContractValue } from "./design-quote";
 
 const userPop = { path: "assignedTo", select: "name role" };
 
@@ -47,13 +23,13 @@ const leadBase = {
   address: zText(500),
   city: zText(100),
   location: zLocation,
-  propertyType: zOptEnum(values(PROPERTY_TYPES)),
-  propertyConfig: zOptEnum(values(PROPERTY_CONFIGS)),
+  propertyType: zOptOption,
+  propertyConfig: zOptOption,
   areaSqft: zNum,
   scope: z.array(z.string().max(50)).max(20).optional(),
   budget: zMoney,
   expectedStart: zDate,
-  source: zOptEnum(values(LEAD_SOURCES)),
+  source: zOptOption,
   sourceDetails: zText(300),
   referredBy: zText(120),
   status: zOptEnum(values(LEAD_STATUS)),
@@ -132,7 +108,9 @@ export const convertLead = api({ perm: ["leads:write", "projects:write"] }, asyn
   if (!lead) throw notFound("Lead not found");
   if (lead.project) throw conflict("Lead is already converted");
 
-  let client = body.existingClient ? await Client.findById(body.existingClient) : null;
+  // lead.client is set when a lead was converted before (its site was later deleted) – reuse that client
+  const clientId = body.existingClient ?? lead.client;
+  let client = clientId ? await Client.findById(clientId) : null;
   if (!client) {
     client = await Client.create({
       clientNo: await nextNumber("CL"),
@@ -150,6 +128,7 @@ export const convertLead = api({ perm: ["leads:write", "projects:write"] }, asyn
 
   const settingsSchedule = (await getSetting<{ name: string; percent: number }[]>("paymentSchedule")) ?? DEFAULT_PAYMENT_SCHEDULE;
   const value = body.contractValue ?? 0;
+  const amounts = scheduleAmounts(settingsSchedule, value); // rounding difference goes to the last milestone
   const project = await Project.create({
     projectNo: await nextNumber("PRJ"),
     name: body.projectName,
@@ -170,7 +149,7 @@ export const convertLead = api({ perm: ["leads:write", "projects:write"] }, asyn
     contractValue: value,
     stage: "design_2d",
     stageHistory: [{ stage: "design_2d", by: user.id, note: "Converted from lead" }],
-    paymentSchedule: settingsSchedule.map((m) => ({ ...m, amount: Math.round((value * m.percent) / 100) })),
+    paymentSchedule: settingsSchedule.map((m, i) => ({ ...m, amount: amounts[i] })),
     createdBy: user.id,
   });
 
@@ -189,21 +168,28 @@ export const convertLead = api({ perm: ["leads:write", "projects:write"] }, asyn
     { project: null, $or: [{ _id: { $in: visitPhotos } }, { entityType: "Lead", entityId: lead._id }] },
     { $set: { project: project._id } }
   );
+  // Approved quotations that moved with the lead set the site's contract value + milestone amounts,
+  // exactly as approving a site quotation does. Without any, the value typed in the form stays.
+  let site = project;
+  if (await Quotation.exists({ project: project._id, isFinal: true })) {
+    await recomputeContractValue(project._id);
+    site = (await Project.findById(project._id)) ?? project;
+  }
 
-  await audit(user, "convert", "Lead", lead._id, `Converted ${lead.name} → ${project.projectNo}`, { project: project._id, ip });
+  await audit(user, "convert", "Lead", lead._id, `Converted ${lead.name} → ${site.projectNo}`, { project: site._id, ip });
   await notify(
     [body.manager, body.designer, body.supervisor],
-    { title: "New site assigned", message: `${project.projectNo} – ${project.name}`, link: `/projects/${project._id}`, type: "project" },
+    { title: "New site assigned", message: `${site.projectNo} – ${site.name}`, link: `/projects/${site._id}`, type: "project" },
     user.id
   );
-  return { client: serialize(client.toJSON()), project: serialize(project.toJSON()) };
+  return { client: serialize(client.toJSON()), project: serialize(site.toJSON()) };
 });
 
 /* ------------------------------- Follow-ups ------------------------------ */
 const fuBase = {
   lead: zRef,
   project: zRef,
-  type: zOptEnum(values(FOLLOWUP_TYPES)),
+  type: zOptOption,
   scheduledAt: z.coerce.date(),
   status: zOptEnum(values(FOLLOWUP_STATUS)),
   purpose: zText(500),
@@ -274,6 +260,7 @@ export const followups = crud({
   },
   afterUpdate: async (doc) => syncLeadFollowUp(doc.lead),
   beforeDelete: async () => undefined,
+  afterDelete: async (doc) => syncLeadFollowUp(doc.lead),
 });
 
 /* ------------------------------- Site visits ----------------------------- */

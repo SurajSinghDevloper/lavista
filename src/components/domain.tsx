@@ -1,12 +1,32 @@
 "use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Check, ChevronLeft, ChevronRight, Download, FileIcon, ImageIcon, Paperclip, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  ExternalLink,
+  FileIcon,
+  FileSpreadsheet,
+  FileText,
+  ImageIcon,
+  Paperclip,
+  Pencil,
+  PlayCircle,
+  Plus,
+  RotateCw,
+  Trash2,
+  Upload,
+  X,
+  ZoomIn,
+  ZoomOut,
+} from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invalidate, useList, useOne } from "@/hooks/use-api";
 import { api, fileUrl } from "@/lib/api-client";
-import { FILE_CATEGORIES, PROJECT_STAGES, ROLES, TRADES, UNITS, labelOf } from "@/lib/constants";
+import { FILE_CATEGORIES, PROJECT_STAGES, RATE_TYPES, ROLES, TRADES, UNITS, labelOf } from "@/lib/constants";
 import { date, dateTime, fileSize, money, relative } from "@/lib/format";
 import { EntitySelect, type RefConfig } from "./form";
 import { Avatar, Button, cx, Empty, IconButton, Modal, useConfirm, useToast } from "./ui";
@@ -19,7 +39,18 @@ export const REF: Record<string, RefConfig> = {
   client: { endpoint: "/clients", label: "name", sub: (r) => `${r.clientNo ?? ""} · ${r.phone ?? ""}` },
   lead: { endpoint: "/leads", label: (r) => `${r.name} (${r.leadNo ?? ""})`, sub: (r) => r.phone },
   vendor: { endpoint: "/vendors", label: "name", sub: (r) => r.phone ?? "", params: { isActive: true } },
-  contractor: { endpoint: "/contractors", label: "name", sub: (r) => labelOf(TRADES, r.trade), params: { isActive: true } },
+  contractor: {
+    endpoint: "/contractors",
+    label: "name",
+    sub: (r) => {
+      const lines: any[] = r.rates?.length ? r.rates : [{ trade: r.trade, rateType: r.rateType, rate: r.rate }];
+      return lines
+        .slice(0, 3)
+        .map((l) => `${labelOf(TRADES, l.trade)}${l.rate ? ` ₹${Number(l.rate).toLocaleString("en-IN")}${l.rateType ? ` ${labelOf(RATE_TYPES, l.rateType).toLowerCase()}` : ""}` : ""}`)
+        .join(" · ");
+    },
+    params: { isActive: true },
+  },
   material: { endpoint: "/materials", label: (r) => r.name, sub: (r) => `${r.code ?? ""} · stock ${r.stockQty} ${r.unit}`, params: { isActive: true } },
   quotation: { endpoint: "/quotations", label: (r) => `${r.quoteNo} v${r.version} – ${r.title}` },
   purchaseOrder: { endpoint: "/purchase-orders", label: (r) => `${r.poNo} – ${r.vendor?.name ?? ""}`, sub: (r) => money(r.total) },
@@ -195,7 +226,7 @@ export function LineItemsEditor({
                 )}
                 {showCategory && (
                   <td className="px-1 py-1">
-                    <select className="input px-2 py-1.5" value={it.category ?? ""} disabled={readOnly} onChange={(e) => set(i, { category: e.target.value })}>
+                    <select className="input py-1.5 pl-2 pr-7" value={it.category ?? ""} disabled={readOnly} onChange={(e) => set(i, { category: e.target.value })}>
                       <option value="">—</option>
                       {TRADES.map((t) => (
                         <option key={t.value} value={t.value}>
@@ -222,7 +253,7 @@ export function LineItemsEditor({
                   )}
                 </td>
                 <td className="px-1 py-1">
-                  <select className="input px-2 py-1.5" value={it.unit} disabled={readOnly} onChange={(e) => set(i, { unit: e.target.value })}>
+                  <select className="input py-1.5 pl-2 pr-7" value={it.unit} disabled={readOnly} onChange={(e) => set(i, { unit: e.target.value })}>
                     {UNITS.map((u) => (
                       <option key={u.value} value={u.value}>
                         {u.label}
@@ -238,7 +269,7 @@ export function LineItemsEditor({
                 </td>
                 {showGst && (
                   <td className="px-1 py-1">
-                    <select className="input px-1 py-1.5 text-right" value={it.gstRate ?? 0} disabled={readOnly} onChange={(e) => set(i, { gstRate: Number(e.target.value) })}>
+                    <select className="input py-1.5 pl-1 pr-6 text-right" value={it.gstRate ?? 0} disabled={readOnly} onChange={(e) => set(i, { gstRate: Number(e.target.value) })}>
                       {[0, 5, 12, 18, 28].map((g) => (
                         <option key={g} value={g}>
                           {g}
@@ -351,38 +382,120 @@ export function UploadButton({
 
 /** Attachments editor bound to a list of file ids (stored on a record). */
 export function Attachments({ files, onChange, meta, readOnly }: { files: (FileRow | string)[]; onChange?: (ids: string[]) => void; meta?: Parameters<ReturnType<typeof useUpload>["upload"]>[1]; readOnly?: boolean }) {
-  const list = files.filter((f): f is FileRow => typeof f === "object");
+  const toast = useToast();
+  // files just uploaded are only ids on the record until it is saved – remember their details so they show at once
+  const [known, setKnown] = useState<Record<string, FileRow>>({});
+  const [edits, setEdits] = useState<Record<string, Partial<FileRow>>>({});
+  const [editing, setEditing] = useState<FileRow | null>(null);
+  const [caption, setCaption] = useState("");
+  const [category, setCategory] = useState("other");
+  const ids = files.map((f) => (typeof f === "string" ? f : f.id));
+  const list = files
+    .map((f) => (typeof f === "string" ? known[f] : f))
+    .filter((f): f is FileRow => !!f)
+    .map((f) => ({ ...f, ...edits[f.id] }));
+  const saveEdit = async () => {
+    if (!editing) return;
+    try {
+      await api.patch(`/files/${editing.id}`, { caption, category });
+      setEdits((e) => ({ ...e, [editing.id]: { caption, category } }));
+      setEditing(null);
+      toast.success("Saved");
+    } catch (e) {
+      toast.error(e);
+    }
+  };
   return (
     <div className="space-y-2">
-      <FileGrid files={list} onRemove={readOnly ? undefined : (id) => onChange?.(list.filter((f) => f.id !== id).map((f) => f.id))} />
+      <FileGrid
+        files={list}
+        onRemove={readOnly ? undefined : (id) => onChange?.(ids.filter((x) => x !== id))}
+        onEdit={readOnly ? undefined : (f) => (setEditing(f), setCaption(f.caption ?? ""), setCategory(f.category ?? "other"))}
+      />
       {!readOnly && (
         <UploadButton
           label="Attach files"
           meta={meta}
-          onUploaded={(rows) => onChange?.([...list.map((f) => f.id), ...rows.map((r) => r.id)])}
+          onUploaded={(rows) => {
+            setKnown((k) => ({ ...k, ...Object.fromEntries(rows.map((r) => [r.id, r])) }));
+            onChange?.([...ids, ...rows.map((r) => r.id)]);
+          }}
         />
       )}
+      <Modal
+        open={!!editing}
+        onClose={() => setEditing(null)}
+        title="Edit file details"
+        size="sm"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setEditing(null)}>Cancel</Button>
+            <Button onClick={saveEdit}>Save</Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <p className="truncate text-xs text-muted">{editing?.originalName}</p>
+          <div>
+            <label className="label">Caption</label>
+            <input className="input" value={caption} maxLength={300} onChange={(e) => setCaption(e.target.value)} placeholder="e.g. Kitchen – wall A before work" />
+          </div>
+          <div>
+            <label className="label">Category</label>
+            <select className="input" value={category} onChange={(e) => setCategory(e.target.value)}>
+              {FILE_CATEGORIES.map((c) => (
+                <option key={c.value} value={c.value}>{c.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
 
 const PREVIEWABLE = /^image\/(jpeg|png|webp|gif)$/;
 
+type ViewKind = "image" | "pdf" | "video" | "excel" | "word" | "csv" | "text" | "none";
+function viewKind(f: FileRow): ViewKind {
+  const m = f.mimeType;
+  const ext = f.originalName.split(".").pop()?.toLowerCase() ?? "";
+  if (PREVIEWABLE.test(m)) return "image";
+  if (m === "application/pdf") return "pdf";
+  if (m === "video/mp4" || m === "video/quicktime") return "video";
+  if (ext === "xlsx") return "excel";
+  if (ext === "docx") return "word";
+  if (m === "text/csv" || ext === "csv") return "csv";
+  if (m === "text/plain" || ext === "txt") return "text";
+  return "none";
+}
+
 function FileTile({ f, onOpen, onRemove, onEdit }: { f: FileRow; onOpen: () => void; onRemove?: () => void; onEdit?: () => void }) {
-  const img = PREVIEWABLE.test(f.mimeType);
+  const kind = viewKind(f);
+  const img = kind === "image";
   const ext = f.originalName.split(".").pop()?.toUpperCase();
   const [broken, setBroken] = useState(false);
   return (
     <div className="group relative overflow-hidden rounded-lg border border-line bg-stone-50">
-      <button type="button" onClick={onOpen} className="block aspect-[4/3] w-full" title={img ? "Preview" : f.mimeType === "application/pdf" ? "Open PDF" : "Open / download"}>
+      <button type="button" onClick={onOpen} className="block aspect-[4/3] w-full" title={kind === "none" ? "Details / download" : "Preview"}>
         {img && !broken ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={fileUrl(f.id, false, true)} alt={f.caption ?? f.originalName} loading="lazy" onError={() => setBroken(true)} className="size-full object-cover" />
         ) : (
           <span className="flex size-full flex-col items-center justify-center gap-1 text-stone-400">
-            {f.mimeType.startsWith("image/") ? <ImageIcon className="size-8" /> : <FileIcon className={cx("size-8", f.mimeType === "application/pdf" && "text-red-400")} />}
+            {kind === "video" ? (
+              <PlayCircle className="size-8 text-sky-400" />
+            ) : f.mimeType.startsWith("image/") ? (
+              <ImageIcon className="size-8" />
+            ) : kind === "excel" || kind === "csv" ? (
+              <FileSpreadsheet className="size-8 text-emerald-500" />
+            ) : kind === "word" || kind === "text" ? (
+              <FileText className="size-8 text-blue-500" />
+            ) : (
+              <FileIcon className={cx("size-8", kind === "pdf" && "text-red-400")} />
+            )}
             <span className="text-[10px] font-semibold">{ext}</span>
-            {f.mimeType.includes("heic") && <span className="px-2 text-center text-[9px] leading-tight">iPhone photo – download to view</span>}
+            {kind !== "none" && <span className="text-[9px] text-stone-400 opacity-0 transition group-hover:opacity-100">Click to preview</span>}
           </span>
         )}
       </button>
@@ -410,45 +523,263 @@ function FileTile({ f, onOpen, onRemove, onEdit }: { f: FileRow; onOpen: () => v
   );
 }
 
-/** Full-screen photo viewer: arrows / keyboard to move, Esc to close. */
-function Lightbox({ images, index, onIndex, onClose }: { images: FileRow[]; index: number; onIndex: (i: number) => void; onClose: () => void }) {
-  const f = images[index];
-  const count = images.length;
+const MAX_TEXT = 2 * 1024 * 1024; // don't pull huge files into the browser for a preview
+
+function parseCsv(text: string, maxRows = 500) {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let q = false;
+  for (let i = 0; i < text.length && rows.length < maxRows; i++) {
+    const ch = text[i];
+    if (q) {
+      if (ch === '"' && text[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else if (ch === '"') q = false;
+      else cell += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else cell += ch;
+  }
+  if (cell || row.length) {
+    row.push(cell);
+    rows.push(row);
+  }
+  return rows;
+}
+
+function SheetTable({ rows }: { rows: unknown[][] }) {
+  const shown = rows.slice(0, 500);
+  const width = Math.min(60, Math.max(1, ...shown.map((r) => r.length)));
+  const show = (v: unknown) => (v == null ? "" : v instanceof Date ? v.toLocaleDateString("en-IN") : String(v));
+  return (
+    <div className="max-h-full overflow-auto rounded-lg bg-white">
+      <table className="min-w-full border-collapse text-xs text-ink">
+        <tbody>
+          {shown.map((r, i) => (
+            <tr key={i} className={i === 0 ? "sticky top-0 bg-stone-100 font-semibold" : i % 2 ? "bg-stone-50" : ""}>
+              <td className="border border-line px-2 py-1 text-right text-[10px] text-stone-400">{i + 1}</td>
+              {Array.from({ length: width }, (_, j) => (
+                <td key={j} className="max-w-xs truncate border border-line px-2 py-1" title={show(r[j])}>
+                  {show(r[j])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rows.length > 500 && <p className="p-2 text-center text-xs text-muted">Showing the first 500 rows – download to see everything.</p>}
+    </div>
+  );
+}
+
+/** Loads Excel / Word / CSV / text in the browser and shows it. */
+function DocumentPreview({ f, kind }: { f: FileRow; kind: ViewKind }) {
+  const [state, setState] = useState<{ loading: boolean; error?: string; sheets?: { name: string; rows: unknown[][] }[]; html?: string; text?: string }>({ loading: true });
+  const [sheet, setSheet] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        if (f.size > (kind === "excel" || kind === "word" ? 15 * 1024 * 1024 : MAX_TEXT)) throw new Error("This file is too big to preview here – please download it.");
+        const res = await fetch(fileUrl(f.id), { credentials: "same-origin" });
+        if (!res.ok) throw new Error("Could not load the file for preview. Please download it instead.");
+        if (kind === "excel") {
+          const { default: readXlsxFile } = await import("read-excel-file/browser");
+          const sheets = await readXlsxFile(await res.blob());
+          if (alive) setState({ loading: false, sheets: sheets.map((s) => ({ name: s.sheet, rows: s.data as unknown[][] })) });
+        } else if (kind === "word") {
+          const mammoth = await import("mammoth");
+          const out = await mammoth.convertToHtml({ arrayBuffer: await res.arrayBuffer() });
+          if (alive) setState({ loading: false, html: out.value });
+        } else {
+          const text = await res.text();
+          if (alive) setState(kind === "csv" ? { loading: false, sheets: [{ name: "CSV", rows: parseCsv(text) }] } : { loading: false, text });
+        }
+      } catch (e) {
+        if (alive) setState({ loading: false, error: e instanceof Error && e.message.length < 140 ? e.message : "This file could not be previewed. Please download it to open it." });
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [f.id, f.size, kind]);
+
+  if (state.loading) return <p className="text-sm text-white/70">Opening preview…</p>;
+  if (state.error) return <NoPreview f={f} message={state.error} />;
+  if (state.sheets) {
+    const s = state.sheets[sheet] ?? state.sheets[0];
+    return (
+      <div className="flex size-full max-w-6xl flex-col gap-2" onClick={(e) => e.stopPropagation()}>
+        {state.sheets.length > 1 && (
+          <div className="flex flex-wrap gap-1">
+            {state.sheets.map((x, i) => (
+              <button key={x.name + i} type="button" onClick={() => setSheet(i)} className={cx("rounded px-2.5 py-1 text-xs", i === sheet ? "bg-white text-ink" : "bg-white/10 text-white hover:bg-white/20")}>
+                {x.name}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="min-h-0 flex-1">{s.rows.length ? <SheetTable rows={s.rows} /> : <p className="text-sm text-white/70">This sheet is empty.</p>}</div>
+      </div>
+    );
+  }
+  if (state.html != null)
+    // the converted document is shown in a sandboxed frame (no scripts can run)
+    return (
+      <iframe
+        title={f.originalName}
+        sandbox=""
+        className="size-full max-w-4xl rounded-lg bg-white"
+        srcDoc={`<!doctype html><meta charset="utf-8"><style>body{font:14px/1.6 system-ui,sans-serif;color:#1c1917;padding:32px 40px;max-width:820px;margin:auto}img{max-width:100%}table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:4px 8px}</style>${state.html}`}
+        onClick={(e) => e.stopPropagation()}
+      />
+    );
+  return (
+    <pre className="size-full max-w-5xl overflow-auto whitespace-pre-wrap rounded-lg bg-white p-4 text-xs text-ink" onClick={(e) => e.stopPropagation()}>
+      {state.text}
+    </pre>
+  );
+}
+
+function NoPreview({ f, message }: { f: FileRow; message?: string }) {
+  const ext = f.originalName.split(".").pop()?.toUpperCase();
+  const hint: Record<string, string> = {
+    DWG: "AutoCAD drawing – open it in AutoCAD / DWG viewer.",
+    DXF: "AutoCAD drawing – open it in AutoCAD / DWG viewer.",
+    SKP: "SketchUp model – open it in SketchUp.",
+    HEIC: "iPhone photo format – most computers can open it after downloading.",
+    HEIF: "iPhone photo format – most computers can open it after downloading.",
+    ZIP: "Compressed folder – download and extract it.",
+    RAR: "Compressed folder – download and extract it.",
+    XLS: "Old Excel format – download to open in Excel.",
+    DOC: "Old Word format – download to open in Word.",
+    PPTX: "PowerPoint – download to open it.",
+  };
+  return (
+    <div className="max-w-sm rounded-xl bg-white p-6 text-center text-ink" onClick={(e) => e.stopPropagation()}>
+      <FileIcon className="mx-auto size-10 text-stone-400" />
+      <p className="mt-3 break-all font-medium">{f.originalName}</p>
+      <p className="mt-1 text-xs text-muted">
+        {ext} · {fileSize(f.size)}
+        {f.uploadedBy?.name ? ` · ${f.uploadedBy.name}` : ""}
+        {f.createdAt ? ` · ${dateTime(f.createdAt)}` : ""}
+      </p>
+      <p className="mt-3 text-sm text-stone-600">{message ?? hint[ext ?? ""] ?? "This type of file can't be shown in the browser."}</p>
+      <a href={fileUrl(f.id, true)} className="mt-4 inline-flex items-center gap-2 rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:bg-stone-800">
+        <Download className="size-4" /> Download
+      </a>
+    </div>
+  );
+}
+
+/** Full-screen viewer for every kind of file: photos (zoom / rotate), PDF, video, Excel, Word, CSV, text. ← → to move, Esc to close. */
+function FileViewer({ files, index, onIndex, onClose }: { files: FileRow[]; index: number; onIndex: (i: number) => void; onClose: () => void }) {
+  const f = files[index];
+  const count = files.length;
+  const [zoom, setZoom] = useState(1);
+  const [rotate, setRotate] = useState(0);
+  const go = (i: number) => {
+    setZoom(1);
+    setRotate(0);
+    onIndex((i + count) % count);
+  };
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
-      if (e.key === "ArrowRight") onIndex((index + 1) % count);
-      if (e.key === "ArrowLeft") onIndex((index - 1 + count) % count);
+      if (e.key === "ArrowRight" && count > 1) go(index + 1);
+      if (e.key === "ArrowLeft" && count > 1) go(index - 1);
+      if (e.key === "+" || e.key === "=") setZoom((z) => Math.min(6, z * 1.25));
+      if (e.key === "-") setZoom((z) => Math.max(0.25, z / 1.25));
     };
     window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, [index, count, onIndex, onClose]);
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", h);
+      document.body.style.overflow = overflow;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [index, count, onClose]);
   if (!f) return null;
-  const nav = "absolute top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white hover:bg-white/25";
+  const kind = viewKind(f);
+  const nav = "absolute top-1/2 z-10 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white hover:bg-white/25";
+  const tool = "rounded p-2 hover:bg-white/15 disabled:opacity-30";
   return (
-    <div className="fixed inset-0 z-[70] flex flex-col bg-black/90" onClick={onClose}>
+    <div className="fixed inset-0 z-[70] flex flex-col bg-black/90" onClick={onClose} role="dialog" aria-label={`Preview of ${f.originalName}`}>
       <div className="flex items-center justify-between gap-3 px-4 py-3 text-sm text-white" onClick={(e) => e.stopPropagation()}>
         <span className="min-w-0 truncate">
-          {f.caption || f.originalName} <span className="text-white/50">· {index + 1} / {count} · {fileSize(f.size)}</span>
+          {f.caption || f.originalName}{" "}
+          <span className="text-white/50">
+            · {index + 1} / {count} · {fileSize(f.size)}
+          </span>
         </span>
         <span className="flex shrink-0 items-center gap-1">
-          <a href={fileUrl(f.id, true)} className="rounded p-2 hover:bg-white/15" title="Download original">
+          {kind === "image" && (
+            <>
+              <button type="button" className={tool} title="Zoom out (−)" onClick={() => setZoom((z) => Math.max(0.25, z / 1.25))}>
+                <ZoomOut className="size-5" />
+              </button>
+              <button type="button" className="rounded px-2 py-1 text-xs tabular-nums hover:bg-white/15" title="Fit to screen" onClick={() => setZoom(1)}>
+                {Math.round(zoom * 100)}%
+              </button>
+              <button type="button" className={tool} title="Zoom in (+)" onClick={() => setZoom((z) => Math.min(6, z * 1.25))}>
+                <ZoomIn className="size-5" />
+              </button>
+              <button type="button" className={tool} title="Rotate" onClick={() => setRotate((r) => (r + 90) % 360)}>
+                <RotateCw className="size-5" />
+              </button>
+            </>
+          )}
+          {(kind === "pdf" || kind === "image" || kind === "video") && (
+            <a href={fileUrl(f.id)} target="_blank" rel="noopener" className={tool} title="Open in a new tab">
+              <ExternalLink className="size-5" />
+            </a>
+          )}
+          <a href={fileUrl(f.id, true)} className={tool} title="Download original">
             <Download className="size-5" />
           </a>
-          <button type="button" className="rounded p-2 hover:bg-white/15" title="Close (Esc)" onClick={onClose}>
+          <button type="button" className={tool} title="Close (Esc)" onClick={onClose}>
             <X className="size-5" />
           </button>
         </span>
       </div>
-      <div className="relative flex min-h-0 flex-1 items-center justify-center px-4 pb-4">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img key={f.id} src={fileUrl(f.id)} alt={f.originalName} className="max-h-full max-w-full rounded-lg object-contain" onClick={(e) => e.stopPropagation()} />
+      <div className={cx("relative flex min-h-0 flex-1 justify-center px-4 pb-4", kind === "image" && zoom > 1 ? "items-start overflow-auto" : "items-center")}>
+        {kind === "image" && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            key={f.id}
+            src={fileUrl(f.id)}
+            alt={f.originalName}
+            className={cx("rounded-lg object-contain transition-transform", zoom <= 1 && "max-h-full max-w-full")}
+            style={{ transform: `scale(${zoom}) rotate(${rotate}deg)`, transformOrigin: zoom > 1 ? "top center" : "center" }}
+            onClick={(e) => e.stopPropagation()}
+            onDoubleClick={() => setZoom((z) => (z > 1 ? 1 : 2))}
+          />
+        )}
+        {kind === "pdf" && <iframe key={f.id} title={f.originalName} src={`${fileUrl(f.id)}#view=FitH`} className="size-full max-w-5xl rounded-lg bg-white" onClick={(e) => e.stopPropagation()} />}
+        {kind === "video" && (
+          <video key={f.id} src={fileUrl(f.id)} controls playsInline className="max-h-full max-w-full rounded-lg bg-black" onClick={(e) => e.stopPropagation()}>
+            <track kind="captions" />
+          </video>
+        )}
+        {(kind === "excel" || kind === "word" || kind === "csv" || kind === "text") && <DocumentPreview key={f.id} f={f} kind={kind} />}
+        {kind === "none" && <NoPreview f={f} />}
         {count > 1 && (
           <>
-            <button type="button" className={cx(nav, "left-4")} title="Previous (←)" onClick={(e) => (e.stopPropagation(), onIndex((index - 1 + count) % count))}>
+            <button type="button" className={cx(nav, "left-4")} title="Previous (←)" onClick={(e) => (e.stopPropagation(), go(index - 1))}>
               <ChevronLeft className="size-6" />
             </button>
-            <button type="button" className={cx(nav, "right-4")} title="Next (→)" onClick={(e) => (e.stopPropagation(), onIndex((index + 1) % count))}>
+            <button type="button" className={cx(nav, "right-4")} title="Next (→)" onClick={(e) => (e.stopPropagation(), go(index + 1))}>
               <ChevronRight className="size-6" />
             </button>
           </>
@@ -456,10 +787,14 @@ function Lightbox({ images, index, onIndex, onClose }: { images: FileRow[]; inde
       </div>
       {count > 1 && (
         <div className="flex justify-center gap-2 overflow-x-auto px-4 pb-4" onClick={(e) => e.stopPropagation()}>
-          {images.map((im, i) => (
-            <button key={im.id} type="button" onClick={() => onIndex(i)} className={cx("size-12 shrink-0 overflow-hidden rounded border-2", i === index ? "border-white" : "border-transparent opacity-60")}>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={fileUrl(im.id, false, true)} alt="" className="size-full object-cover" onError={(e) => (e.currentTarget.style.visibility = "hidden")} />
+          {files.map((im, i) => (
+            <button key={im.id} type="button" onClick={() => go(i)} title={im.originalName} className={cx("flex size-12 shrink-0 items-center justify-center overflow-hidden rounded border-2 bg-white/10 text-[9px] font-semibold text-white/80", i === index ? "border-white" : "border-transparent opacity-60")}>
+              {viewKind(im) === "image" ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={fileUrl(im.id, false, true)} alt="" className="size-full object-cover" onError={(e) => (e.currentTarget.style.visibility = "hidden")} />
+              ) : (
+                im.originalName.split(".").pop()?.toUpperCase()
+              )}
             </button>
           ))}
         </div>
@@ -471,22 +806,15 @@ function Lightbox({ images, index, onIndex, onClose }: { images: FileRow[]; inde
 export function FileGrid({ files, onRemove, onDelete, onEdit }: { files: FileRow[]; onRemove?: (id: string) => void; onDelete?: (id: string) => void; onEdit?: (f: FileRow) => void }) {
   const [index, setIndex] = useState<number | null>(null);
   if (!files.length) return null;
-  const images = files.filter((f) => PREVIEWABLE.test(f.mimeType));
   const remove = onDelete ?? onRemove;
   return (
     <>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-        {files.map((f) => (
-          <FileTile
-            key={f.id}
-            f={f}
-            onOpen={() => (PREVIEWABLE.test(f.mimeType) ? setIndex(images.findIndex((x) => x.id === f.id)) : window.open(fileUrl(f.id), "_blank", "noopener"))}
-            onRemove={remove ? () => remove(f.id) : undefined}
-            onEdit={onEdit ? () => onEdit(f) : undefined}
-          />
+        {files.map((f, i) => (
+          <FileTile key={f.id} f={f} onOpen={() => setIndex(i)} onRemove={remove ? () => remove(f.id) : undefined} onEdit={onEdit ? () => onEdit(f) : undefined} />
         ))}
       </div>
-      {index !== null && <Lightbox images={images} index={index} onIndex={setIndex} onClose={() => setIndex(null)} />}
+      {index !== null && <FileViewer files={files} index={index} onIndex={setIndex} onClose={() => setIndex(null)} />}
     </>
   );
 }
@@ -625,7 +953,12 @@ export function Letterhead({ title, number, dateValue, right }: { title: string;
     <div className="flex items-start justify-between gap-6 border-b-2 border-ink pb-4">
       <div>
         <div className="flex items-center gap-3">
-          <span className="flex size-11 items-center justify-center rounded-lg bg-ink font-display text-lg font-bold text-white">LV</span>
+          {company.logo ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={fileUrl(company.logo)} alt="" className="h-12 max-w-40 object-contain" />
+          ) : (
+            <span className="flex size-11 items-center justify-center rounded-lg bg-ink font-display text-lg font-bold text-white">LV</span>
+          )}
           <div>
             <p className="font-display text-2xl font-bold tracking-wide">{company.name || "LA-VISTA"}</p>
             {company.tagline && <p className="text-xs text-stone-500">{company.tagline}</p>}

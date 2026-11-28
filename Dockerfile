@@ -26,7 +26,8 @@ FROM base AS runner
 ENV NODE_ENV=production \
     PORT=4044 \
     HOSTNAME=0.0.0.0 \
-    UPLOAD_DIR=/app/storage/uploads
+    UPLOAD_DIR=/app/storage/uploads \
+    TZ=Asia/Kolkata
 
 RUN addgroup --system --gid 1001 nodejs \
     && adduser --system --uid 1001 nextjs \

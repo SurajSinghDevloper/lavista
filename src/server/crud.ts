@@ -18,6 +18,8 @@ export type CrudConfig = {
   updateSchema?: ZodType<any>;
   search?: string[];
   filters?: Record<string, FilterKind>;
+  /** A filter that should match any of several fields, e.g. trade → ["trade", "rates.trade"]. */
+  filterFields?: Record<string, string[]>;
   /** Field used for ?from=&to= date range filtering. */
   dateField?: string;
   sortable?: string[];
@@ -76,19 +78,21 @@ export function buildListFilter(cfg: CrudConfig, ctx: Ctx) {
       if (Number.isFinite(n)) and.push({ [key]: n });
     } else if (kind === "list") {
       const vals = raw.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 30);
-      and.push({ [key]: vals.length === 1 ? vals[0] : { $in: vals } });
+      const cond = vals.length === 1 ? vals[0] : { $in: vals };
+      const fields = cfg.filterFields?.[key];
+      and.push(fields?.length ? { $or: fields.map((f) => ({ [f]: cond })) } : { [key]: cond });
     } else and.push({ [key]: String(raw).slice(0, 100) });
   }
   if (cfg.dateField) {
     const from = sp.get("from");
     const to = sp.get("to");
     const range: Record<string, Date> = {};
-    if (from && !isNaN(Date.parse(from))) range.$gte = new Date(from);
-    if (to && !isNaN(Date.parse(to))) {
-      const d = new Date(to);
-      if (/^\d{4}-\d{2}-\d{2}$/.test(to)) d.setHours(23, 59, 59, 999);
-      range.$lte = d;
-    }
+    // A date-only value means that India day (IST = UTC+05:30, no DST), whatever the server TZ:
+    // from = 00:00 IST, to = 23:59:59.999 IST. Date.parse reads "YYYY-MM-DD" as 00:00 UTC.
+    const IST_MS = 330 * 60_000;
+    const dateOnly = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+    if (from && !isNaN(Date.parse(from))) range.$gte = dateOnly(from) ? new Date(Date.parse(from) - IST_MS) : new Date(from);
+    if (to && !isNaN(Date.parse(to))) range.$lte = dateOnly(to) ? new Date(Date.parse(to) + 86_400_000 - IST_MS - 1) : new Date(to);
     if (Object.keys(range).length) and.push({ [cfg.dateField]: range });
   }
   return and;
@@ -132,7 +136,9 @@ export function crud(cfg: CrudConfig) {
     let data: any = await parseBody(ctx.req, cfg.createSchema);
     if (cfg.projectScoped && data.project) await assertProjectAccess(ctx.user, data.project);
     if (cfg.numbering && !data[cfg.numbering.field]) {
-      data[cfg.numbering.field] = await nextNumber(cfg.numbering.prefix, { fy: cfg.numbering.fy });
+      // FY-numbered documents (receipts, bills) take the year of their own date, not of the day they were typed in
+      const docDate = cfg.numbering.fy && cfg.dateField ? data[cfg.dateField] : undefined;
+      data[cfg.numbering.field] = await nextNumber(cfg.numbering.prefix, { fy: cfg.numbering.fy, date: docDate });
     }
     if (cfg.ownerField) data[cfg.ownerField] = ctx.user.id;
     if (cfg.beforeCreate) data = await cfg.beforeCreate(data, ctx);

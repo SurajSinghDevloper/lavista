@@ -1,11 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { z } from "zod";
-import { CHECKLIST_STATUS, RATE_TYPES, TRADES, WORK_ORDER_STATUS, values } from "@/lib/constants";
+import { CHECKLIST_STATUS, WORK_ORDER_STATUS, values } from "@/lib/constants";
 import { crud } from "../crud";
 import { api, assertId, badRequest, notFound, parseBody } from "../http";
 import { Checklist, Contractor, DailyReport, Expense, Project, WorkOrder, serialize } from "../models";
 import { assertProjectAccess, computeItems, notify, round2 } from "../services/core";
-import { aliasId, zBool, zDate, zId, zLineItem, zMoney, zNum, zOptEnum, zOptPhone, zPercent, zRef, zRefs, zStr, zText } from "../validators";
+import { aliasId, zBool, zDate, zId, zLineItem, zMoney, zNum, zOptEnum, zOption, zOptOption, zOptPhone, zPercent, zRef, zRefs, zStr, zText } from "../validators";
 import { advanceStageIf } from "./projects";
 
 /* -------------------------------- Checklists ----------------------------- */
@@ -50,6 +50,11 @@ export const checklists = crud({
     if (data.isTemplate) data.project = null;
     return data;
   },
+  afterUpdate: async (doc, before, ctx) => {
+    if (doc.project && doc.assignedTo && String(doc.assignedTo) !== String(before.assignedTo ?? "")) {
+      await notify([doc.assignedTo], { title: "Checklist assigned", message: doc.name, link: `/projects/${doc.project}?tab=checklists`, type: "checklist" }, ctx.user.id);
+    }
+  },
 });
 
 /** Create a site checklist from a template. */
@@ -73,19 +78,23 @@ export const applyChecklist = api({ perm: "checklists:write" }, async ({ req, pa
   return serialize(doc.toJSON());
 });
 
-/** Tick / untick a checklist item (records who and when). */
+/** Tick / untick a checklist item (records who and when), or correct its text / remark. */
 export const toggleChecklistItem = api({ perm: "checklists:write" }, async ({ req, params, user }) => {
   const id = assertId(params.id);
   const itemId = assertId(params.itemId, "item");
-  const body = await parseBody(req, z.object({ checked: z.boolean(), remark: zText(1000), photo: zRef }));
+  const body = await parseBody(req, z.object({ checked: z.boolean().optional(), text: zStr(500).optional(), remark: zText(1000), photo: zRef }));
   const c = await Checklist.findById(id);
   if (!c) throw notFound("Checklist not found");
   if (c.project) await assertProjectAccess(user, c.project);
   const it = c.items.id(itemId);
   if (!it) throw notFound("This checklist item could not be found. It may have been removed – please refresh.");
-  it.checked = body.checked;
-  it.checkedBy = body.checked ? user.id : undefined;
-  it.checkedAt = body.checked ? new Date() : undefined;
+  // only a real tick / untick changes who & when (editing the text keeps them)
+  if (body.checked !== undefined && body.checked !== !!it.checked) {
+    it.checked = body.checked;
+    it.checkedBy = body.checked ? user.id : undefined;
+    it.checkedAt = body.checked ? new Date() : undefined;
+  }
+  if (body.text !== undefined) it.text = body.text;
   if (body.remark !== undefined) it.remark = body.remark;
   if (body.photo !== undefined) it.photo = body.photo ?? undefined;
   await saveChecklist(c);
@@ -162,7 +171,7 @@ export const dailyReports = crud({
   label: (d) => new Date(d.date).toDateString(),
   afterCreate: async (doc, ctx) => {
     const p = await Project.findById(doc.project).select("manager projectNo progress stage");
-    if (p && doc.progress != null) {
+    if (p && (await isLatestProgressReport(doc))) {
       p.progress = doc.progress;
       await p.save();
     }
@@ -173,9 +182,16 @@ export const dailyReports = crud({
     }
   },
   afterUpdate: async (doc) => {
-    if (doc.progress != null) await Project.updateOne({ _id: doc.project }, { $set: { progress: doc.progress } });
+    if (await isLatestProgressReport(doc)) await Project.updateOne({ _id: doc.project }, { $set: { progress: doc.progress } });
   },
 });
+
+/** Only the newest report (by report date) sets the site's progress – back-filling an old day must not roll it back. */
+async function isLatestProgressReport(doc: any) {
+  if (doc.progress == null) return false;
+  const latest = await DailyReport.findOne({ project: doc.project, progress: { $ne: null } }).sort("-date -createdAt").select("_id").lean<any>();
+  return !!latest && String(latest._id) === String(doc._id);
+}
 
 /* ------------------------------- Contractors ----------------------------- */
 const bank = z
@@ -183,14 +199,34 @@ const bank = z
   .partial()
   .optional();
 
+const rateLine = z.preprocess(
+  aliasId,
+  z.object({ _id: zId.optional(), trade: zOption, work: zText(150), rateType: zOptOption, rate: zMoney, notes: zText(300) })
+);
+
+/** Main trade / rate follow the rate card so older screens and reports keep working. */
+function syncMainRate(data: any, existing?: any) {
+  if (!Array.isArray(data.rates)) return data;
+  data.rates = data.rates.filter((r: any) => r.trade);
+  const trade = data.trade ?? existing?.trade;
+  const main = data.rates.find((r: any) => r.trade === trade) ?? data.rates[0];
+  if (!trade && main) data.trade = main.trade;
+  if (main) {
+    data.rateType = main.rateType ?? null;
+    data.rate = main.rate ?? null;
+  }
+  return data;
+}
+
 const contractorBase = {
   name: zStr(150),
-  trade: z.enum(values(TRADES)),
+  trade: zOptOption,
+  rates: z.array(rateLine).max(50).optional(),
   phone: zOptPhone,
   alternatePhone: zOptPhone,
   address: zText(500),
   teamSize: zNum,
-  rateType: zOptEnum(values(RATE_TYPES)),
+  rateType: zOptOption,
   rate: zMoney,
   idProof: zText(100),
   bank,
@@ -205,12 +241,19 @@ export const contractors = crud({
   entity: "Contractor",
   createSchema: z.object(contractorBase),
   updateSchema: z.object(contractorBase).partial(),
-  search: ["name", "phone", "contractorNo"],
+  search: ["name", "phone", "contractorNo", "rates.work"],
   filters: { trade: "list", isActive: "bool" },
+  filterFields: { trade: ["trade", "rates.trade"] }, // "Painting" also finds a carpenter who has a painting rate
   sortable: ["name", "createdAt", "rating"],
   defaultSort: "name",
   numbering: { field: "contractorNo", prefix: "CON" },
   ownerField: "createdBy",
+  beforeCreate: (data) => {
+    syncMainRate(data);
+    if (!data.trade) throw badRequest("Please choose the contractor's main trade, or add at least one rate line.");
+    return data;
+  },
+  beforeUpdate: (data, existing) => syncMainRate(data, existing),
   beforeDelete: async (doc) => {
     if (await WorkOrder.exists({ contractor: doc._id })) throw badRequest("Contractor has work orders – deactivate instead");
   },
@@ -220,7 +263,7 @@ export const contractors = crud({
 const woBase = {
   project: zId,
   contractor: zId,
-  trade: zOptEnum(values(TRADES)),
+  trade: zOptOption,
   scope: zText(10000),
   items: z.array(zLineItem).max(500).optional(),
   amount: zMoney,

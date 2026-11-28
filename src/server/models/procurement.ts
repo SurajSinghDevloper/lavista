@@ -1,15 +1,4 @@
-import {
-  DELIVERY_LOCATIONS,
-  MATERIAL_CATEGORIES,
-  MR_STATUS,
-  PAYMENT_STATUS,
-  PO_STATUS,
-  RATE_TYPES,
-  STOCK_TXN_TYPES,
-  TRADES,
-  values,
-  WORK_ORDER_STATUS,
-} from "@/lib/constants";
+import { DELIVERY_LOCATIONS, MR_STATUS, PAYMENT_STATUS, PO_STATUS, STOCK_TXN_TYPES, values, WORK_ORDER_STATUS } from "@/lib/constants";
 import { Schema } from "mongoose";
 import { defineModel, LineItemSchema, makeSchema, ObjectId } from "./_base";
 
@@ -40,16 +29,29 @@ const VendorSchema = makeSchema({
 export const Vendor = defineModel("Vendor", VendorSchema);
 
 /* ------------------------------- Contractor ------------------------------ */
+/** One line of a contractor's rate card – the same person can charge differently per trade / work. */
+const ContractorRateSchema = new Schema(
+  {
+    trade: { type: String, required: true },
+    work: { type: String, trim: true }, // e.g. "Wall putty + 2 coats", "Kitchen carcass"
+    rateType: String,
+    rate: { type: Number, min: 0 },
+    notes: String,
+  },
+  { _id: true }
+);
+
 const ContractorSchema = makeSchema({
   contractorNo: { type: String, unique: true, sparse: true },
   name: { type: String, required: true, trim: true },
-  trade: { type: String, enum: values(TRADES), required: true, index: true },
+  trade: { type: String, required: true, index: true },
   phone: { type: String, trim: true },
   alternatePhone: String,
   address: String,
   teamSize: Number,
-  rateType: { type: String, enum: values(RATE_TYPES) },
+  rateType: { type: String }, // main rate (kept in sync with the first line of the rate card)
   rate: Number,
+  rates: { type: [ContractorRateSchema], default: [] },
   idProof: String,
   bank: BankSchema,
   rating: { type: Number, min: 0, max: 5 },
@@ -57,6 +59,7 @@ const ContractorSchema = makeSchema({
   notes: String,
   createdBy: { type: ObjectId, ref: "User" },
 });
+ContractorSchema.index({ "rates.trade": 1 });
 export const Contractor = defineModel("Contractor", ContractorSchema);
 
 /* ----------------------- Work order (contractor ↔ site) ------------------ */
@@ -64,7 +67,7 @@ const WorkOrderSchema = makeSchema({
   woNo: { type: String, unique: true, sparse: true },
   project: { type: ObjectId, ref: "Project", required: true, index: true },
   contractor: { type: ObjectId, ref: "Contractor", required: true, index: true },
-  trade: { type: String, enum: values(TRADES) },
+  trade: { type: String },
   scope: String,
   items: { type: [LineItemSchema], default: [] },
   amount: { type: Number, default: 0 },
@@ -82,7 +85,7 @@ export const WorkOrder = defineModel("WorkOrder", WorkOrderSchema);
 const MaterialSchema = makeSchema({
   code: { type: String, unique: true, sparse: true, trim: true, uppercase: true },
   name: { type: String, required: true, trim: true },
-  category: { type: String, enum: values(MATERIAL_CATEGORIES), required: true, index: true },
+  category: { type: String, required: true, index: true },
   unit: { type: String, default: "nos" },
   brand: String,
   specification: String,
@@ -136,7 +139,7 @@ const MRItemSchema = new Schema(
 const MaterialRequestSchema = makeSchema({
   mrNo: { type: String, unique: true, sparse: true },
   project: { type: ObjectId, ref: "Project", required: true, index: true },
-  trade: { type: String, enum: values(TRADES) },
+  trade: { type: String },
   requiredBy: Date,
   priority: { type: String, enum: ["normal", "urgent"], default: "normal" },
   items: { type: [MRItemSchema], default: [] },
@@ -156,7 +159,7 @@ const PurchaseOrderSchema = makeSchema({
   project: { type: ObjectId, ref: "Project", index: true }, // empty ⇒ factory stock / independent
   materialRequest: { type: ObjectId, ref: "MaterialRequest" },
   deliverTo: { type: String, enum: values(DELIVERY_LOCATIONS), default: "site" },
-  category: { type: String, enum: values(MATERIAL_CATEGORIES) },
+  category: { type: String },
   date: { type: Date, default: Date.now },
   expectedDate: Date,
   items: { type: [LineItemSchema], default: [] },
@@ -195,7 +198,7 @@ const GRNSchema = makeSchema({
   vendor: { type: ObjectId, ref: "Vendor", index: true },
   project: { type: ObjectId, ref: "Project", index: true },
   location: { type: String, enum: values(DELIVERY_LOCATIONS), default: "site" },
-  category: { type: String, enum: values(MATERIAL_CATEGORIES) },
+  category: { type: String },
   receivedAt: { type: Date, default: Date.now },
   items: { type: [GRNItemSchema], default: [] },
   vendorInvoiceNo: String,

@@ -1,7 +1,7 @@
 "use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { ArrowLeft, Building2, CalendarDays, LayoutGrid, MapPin, Pencil, Phone, Plus, Table2, Trash2 } from "lucide-react";
+import { ArrowLeft, Building2, CalendarDays, LayoutGrid, MapPin, MoreHorizontal, Pencil, Phone, Plus, Table2, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { use, useEffect, useState } from "react";
@@ -9,7 +9,7 @@ import { useAuth } from "@/components/auth";
 import { DataTable, FilterBar, Pagination, SearchBox } from "@/components/data-table";
 import { ActivityFeed, FileLibrary, Person, REF, StageStepper } from "@/components/domain";
 import { FormDrawer } from "@/components/form";
-import { Badge, Button, Card, Empty, KV, LoadError, Loading, Modal, PageHeader, Progress, Segmented, StatusBadge, Tabs, cx, useConfirm, useToast } from "@/components/ui";
+import { Badge, Button, Card, Empty, IconButton, KV, LoadError, Loading, Menu, MenuItem, Modal, PageHeader, Progress, Segmented, StatusBadge, Tabs, cx, useConfirm, useToast } from "@/components/ui";
 import { invalidate, useList, useOne } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { PROJECT_STAGES, PROJECT_STATUS, PROPERTY_CONFIGS, PROPERTY_TYPES, WORK_SCOPES, labelOf } from "@/lib/constants";
@@ -19,19 +19,29 @@ import { projectColumns, projectFields } from "./config";
 import { DesignsPanel } from "./designs";
 import { GRNView, MaterialRequestsView, PurchaseOrdersView, SiteConsumption } from "./procurement";
 import { QuotationsPanel } from "./quotations";
-import { SiteVisitPanel } from "./sales";
+import { CardEditButton, SiteVisitPanel } from "./sales";
 import { ChecklistsView, DailyReportsView, WorkOrdersView } from "./site";
 import { TasksView } from "./tasks";
 
 /* ---------------------------------- List --------------------------------- */
 export function ProjectsPage() {
   const router = useRouter();
+  const toast = useToast();
   const { can } = useAuth();
   const [view, setView] = useState<"cards" | "table">("cards");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
   const [filters, setFilters] = useState<Record<string, any>>({ status: "active" });
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<any>(null);
+  const canEdit = can("projects:write");
+  const openEdit = async (r: any) => {
+    try {
+      setEditing(await api.get(`/projects/${r.id}`));
+    } catch (e) {
+      toast.error(e);
+    }
+  };
   const { rows, meta, loading, mutate, error } = useList("/projects", { q, page, limit: view === "cards" ? 24 : 20, ...filters, sort: "-updatedAt" });
   return (
     <div>
@@ -77,7 +87,10 @@ export function ProjectsPage() {
                   </div>
                   <StatusBadge options={PROJECT_STATUS} value={p.status} />
                 </div>
-                <div className="mt-3"><StatusBadge options={PROJECT_STAGES} value={p.stage} /></div>
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <StatusBadge options={PROJECT_STAGES} value={p.stage} />
+                  {canEdit && <CardEditButton label="Edit site details" onClick={() => openEdit(p)} />}
+                </div>
                 <div className="mt-4 flex items-center gap-2">
                   <Progress value={p.progress} />
                   <span className="text-xs tabular-nums text-muted">{p.progress ?? 0}%</span>
@@ -95,11 +108,28 @@ export function ProjectsPage() {
         )
       ) : (
         <div className="card">
-          <DataTable columns={projectColumns} rows={rows} loading={loading} onRowClick={(r) => router.push(`/projects/${r.id}`)} />
+          <DataTable
+            columns={projectColumns}
+            rows={rows}
+            loading={loading}
+            error={error}
+            onRetry={() => mutate()}
+            onRowClick={(r) => router.push(`/projects/${r.id}`)}
+            rowActions={
+              canEdit
+                ? (r) => (
+                    <Menu trigger={<IconButton label="Actions"><MoreHorizontal className="size-4" /></IconButton>}>
+                      <MenuItem icon={<Pencil className="size-4" />} onClick={() => openEdit(r)}>Edit details</MenuItem>
+                    </Menu>
+                  )
+                : undefined
+            }
+          />
         </div>
       )}
       {meta && meta.pages > 1 && <div className="card mt-4"><Pagination page={meta.page} pages={meta.pages} total={meta.total} onPage={setPage} /></div>}
       <FormDrawer open={creating} onClose={() => setCreating(false)} title="New site" fields={projectFields} endpoint="/projects" defaults={{ status: "active" }} onSaved={(r) => (mutate(), router.push(`/projects/${r.id}`))} />
+      <FormDrawer open={!!editing} onClose={() => setEditing(null)} title={editing ? `Edit site – ${editing.name}` : "Edit site"} fields={projectFields} endpoint="/projects" record={editing} onSaved={() => invalidate("/projects")} />
     </div>
   );
 }
@@ -158,7 +188,14 @@ function Overview({ p, summary, onStage }: { p: any; summary: any; onStage: (s: 
           <div className="card p-3"><p className="text-xs text-muted">QC checklist</p><p className="text-xl font-semibold">{s.checklist.done}/{s.checklist.total}</p></div>
           <div className="card p-3"><p className="text-xs text-muted">Pending material req.</p><p className={cx("text-xl font-semibold", s.counts.pendingMaterialRequests && "text-amber-700")}>{s.counts.pendingMaterialRequests}</p></div>
           {s.finance && <div className="card p-3"><p className="text-xs text-muted">Received</p><p className="text-xl font-semibold text-emerald-700">{moneyShort(s.finance.received)}</p><p className="text-xs text-muted">of {moneyShort(s.contractValue)}</p></div>}
-          {s.finance && <div className="card p-3"><p className="text-xs text-muted">Spent</p><p className="text-xl font-semibold text-rose-700">{moneyShort(s.finance.spent)}</p><p className="text-xs text-muted">Balance {moneyShort(s.finance.balance)}</p></div>}
+          {/* same B as the Accounts tab: cash spent + material issued from factory stock, so Balance = Received − this */}
+          {s.finance && (
+            <div className="card p-3" title={`Cash ${money(s.finance.spent)} + factory material ${money(s.finance.materialFromStock)}`}>
+              <p className="text-xs text-muted">Site cost</p>
+              <p className="text-xl font-semibold text-rose-700">{moneyShort(s.finance.cost ?? s.finance.spent)}</p>
+              <p className="text-xs text-muted">Cash {moneyShort(s.finance.spent)} · Balance {moneyShort(s.finance.balance)}</p>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -177,6 +214,7 @@ export function ProjectDetail({ params }: { params: Promise<{ id: string }> }) {
   const [edit, setEdit] = useState(false);
   const [stage, setStage] = useState<string | null>(null);
   const [note, setNote] = useState("");
+  const [moving, setMoving] = useState(false);
 
   useEffect(() => {
     const t = new URLSearchParams(window.location.search).get("tab") as Tab | null;
@@ -191,6 +229,8 @@ export function ProjectDetail({ params }: { params: Promise<{ id: string }> }) {
   if (!p) return error ? <LoadError error={error} onRetry={() => mutate()} /> : <Empty title="Site not found" />;
 
   const moveStage = async () => {
+    if (moving) return;
+    setMoving(true);
     try {
       await api.post(`/projects/${id}/stage`, { stage, note });
       toast.success("Stage updated");
@@ -200,6 +240,8 @@ export function ProjectDetail({ params }: { params: Promise<{ id: string }> }) {
       invalidate("/dashboard");
     } catch (e) {
       toast.error(e);
+    } finally {
+      setMoving(false);
     }
   };
   const del = async () => {
@@ -265,7 +307,7 @@ export function ProjectDetail({ params }: { params: Promise<{ id: string }> }) {
         {current === "activity" && <Card><ActivityFeed project={id} limit={100} /></Card>}
       </div>
       <FormDrawer open={edit} onClose={() => setEdit(false)} title="Edit site" fields={projectFields} endpoint="/projects" record={p} onSaved={() => (mutate(), reloadSummary())} />
-      <Modal open={!!stage} onClose={() => setStage(null)} title={`Move to: ${labelOf(PROJECT_STAGES, stage)}`} footer={<><Button variant="secondary" onClick={() => setStage(null)}>Cancel</Button><Button onClick={moveStage}>Move</Button></>}>
+      <Modal open={!!stage} onClose={() => setStage(null)} title={`Move to: ${labelOf(PROJECT_STAGES, stage)}`} footer={<><Button variant="secondary" onClick={() => setStage(null)}>Cancel</Button><Button loading={moving} onClick={moveStage}>Move</Button></>}>
         <label className="label">Note (optional)</label>
         <input className="input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Client approved final layout" />
         <div className="mt-3">

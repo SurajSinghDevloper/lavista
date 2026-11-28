@@ -138,8 +138,11 @@ function Editor({ initial }: { initial: Q }) {
   const [feedback, setFeedback] = useState<null | "changes_requested" | "rejected">(null);
   const [fbText, setFbText] = useState("");
   const [revise, setRevise] = useState(false);
+  const [busy, setBusy] = useState(false); // status change / new version in progress
   const [reviseText, setReviseText] = useState("");
-  const locked = ["approved", "superseded", "rejected"].includes(q.status ?? "");
+  // approved / superseded versions are frozen (the server says the same); a rejected one can still be corrected
+  const locked = ["approved", "superseded"].includes(q.status ?? "");
+  const readOnly = locked || !can("quotations:write");
   const t = useMemo(() => totals(q), [q]);
   const set = (patch: Partial<Q>) => (setQ((x) => ({ ...x, ...patch })), setDirty(true));
 
@@ -162,8 +165,12 @@ function Editor({ initial }: { initial: Q }) {
     changeSummary: q.changeSummary,
   });
 
-  const save = async () => {
-    if (!q.items.length) return toast.error("Add at least one item");
+  /** Returns true when the quotation is saved – callers must not go on with stale data otherwise. */
+  const save = async (): Promise<boolean> => {
+    if (!q.items.length) {
+      toast.error("Add at least one item");
+      return false;
+    }
     setSaving(true);
     try {
       const r: any = q.id ? await api.patch(`/quotations/${q.id}`, payload()) : await api.post("/quotations", payload());
@@ -172,26 +179,35 @@ function Editor({ initial }: { initial: Q }) {
       invalidate("/quotations");
       if (!q.id) router.replace(`/quotations/${r.id}`);
       else setQ((x) => ({ ...x, ...r }));
+      return true;
     } catch (e) {
       toast.error(e);
+      return false;
     } finally {
       setSaving(false);
     }
   };
 
   const setStatus = async (status: string, clientFeedback?: string) => {
-    if (dirty) await save();
+    if (busy) return;
+    setBusy(true);
     try {
+      // unsaved edits go first; if they can't be saved, don't send / approve the old version
+      if (dirty && !(await save())) return;
       const r: any = await api.post(`/quotations/${q.id}/status`, { status, clientFeedback });
       setQ((x) => ({ ...x, ...r }));
       invalidate("/quotations", "/projects", "/leads");
       toast.success(`Marked ${labelOf(QUOTE_STATUS, status).toLowerCase()}`);
     } catch (e) {
       toast.error(e);
+    } finally {
+      setBusy(false);
     }
   };
 
   const doRevise = async () => {
+    if (busy) return; // a double tap would create two new versions
+    setBusy(true);
     try {
       const r: any = await api.post(`/quotations/${q.id}/revise`, { changeSummary: reviseText });
       invalidate("/quotations");
@@ -199,6 +215,8 @@ function Editor({ initial }: { initial: Q }) {
       router.push(`/quotations/${r.id}`);
     } catch (e) {
       toast.error(e);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -257,10 +275,15 @@ function Editor({ initial }: { initial: Q }) {
       {q.id && !locked && can("quotations:write") && (
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-white p-3">
           <span className="mr-2 text-xs font-semibold uppercase tracking-wide text-stone-500">Client response</span>
-          {q.status === "draft" && <Button size="sm" variant="secondary" icon={<Send className="size-4" />} onClick={() => setStatus("sent")}>Mark sent to client</Button>}
+          {(q.status === "draft" || q.status === "rejected") && <Button size="sm" variant="secondary" icon={<Send className="size-4" />} disabled={busy} onClick={() => setStatus("sent")}>{q.status === "rejected" ? "Mark sent again" : "Mark sent to client"}</Button>}
           <Button size="sm" variant="secondary" icon={<MessageSquareWarning className="size-4" />} onClick={() => (setFbText(q.clientFeedback ?? ""), setFeedback("changes_requested"))}>Changes requested</Button>
-          {can("quotations:approve") && <Button size="sm" variant="success" icon={<CheckCircle2 className="size-4" />} onClick={async () => (await confirm({ title: `Approve v${q.version} as final?`, message: "Other versions will be superseded and the site contract value will update." })) && setStatus("approved")}>Approve as final</Button>}
-          <Button size="sm" variant="ghost" className="text-red-600" icon={<XCircle className="size-4" />} onClick={() => (setFbText(""), setFeedback("rejected"))}>Rejected</Button>
+          {can("quotations:approve") && <Button size="sm" variant="success" icon={<CheckCircle2 className="size-4" />} disabled={busy} onClick={async () => (await confirm({ title: `Approve v${q.version} as final?`, message: "Other versions will be superseded and the site contract value will update." })) && setStatus("approved")}>Approve as final</Button>}
+          {q.status !== "rejected" && <Button size="sm" variant="ghost" className="text-red-600" icon={<XCircle className="size-4" />} onClick={() => (setFbText(""), setFeedback("rejected"))}>Rejected</Button>}
+        </div>
+      )}
+      {q.status === "rejected" && can("quotations:write") && (
+        <div className="rounded-lg border border-line bg-stone-50 px-4 py-2.5 text-sm text-stone-600">
+          The client rejected this version. You can still correct it and save, or use <strong>Revise</strong> to start a new version.
         </div>
       )}
       {q.clientFeedback && <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900">Client feedback: {q.clientFeedback}</div>}
@@ -281,11 +304,11 @@ function Editor({ initial }: { initial: Q }) {
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <div className="sm:col-span-2">
                 <label className="label">Title *</label>
-                <input className="input" value={q.title} disabled={locked} onChange={(e) => set({ title: e.target.value })} />
+                <input className="input" value={q.title} disabled={readOnly} onChange={(e) => set({ title: e.target.value })} />
               </div>
               <div>
                 <label className="label">Type</label>
-                <select className="input" value={q.type} disabled={locked} onChange={(e) => set({ type: e.target.value })}>
+                <select className="input" value={q.type} disabled={readOnly} onChange={(e) => set({ type: e.target.value })}>
                   {QUOTE_TYPES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
@@ -308,35 +331,35 @@ function Editor({ initial }: { initial: Q }) {
               )}
               <div>
                 <label className="label">Customer name (on print)</label>
-                <input className="input" value={q.customerName ?? ""} disabled={locked} onChange={(e) => set({ customerName: e.target.value })} placeholder="Auto from site / lead" />
+                <input className="input" value={q.customerName ?? ""} disabled={readOnly} onChange={(e) => set({ customerName: e.target.value })} placeholder="Auto from site / lead" />
               </div>
               <div>
                 <label className="label">Date</label>
-                <input type="date" className="input" value={toInputDate(q.date)} disabled={locked} onChange={(e) => set({ date: e.target.value })} />
+                <input type="date" className="input" value={toInputDate(q.date)} disabled={readOnly} onChange={(e) => set({ date: e.target.value })} />
               </div>
               <div>
                 <label className="label">Valid until</label>
-                <input type="date" className="input" value={toInputDate(q.validUntil)} disabled={locked} onChange={(e) => set({ validUntil: e.target.value })} />
+                <input type="date" className="input" value={toInputDate(q.validUntil)} disabled={readOnly} onChange={(e) => set({ validUntil: e.target.value })} />
               </div>
               {(q.version ?? 1) > 1 && (
                 <div className="sm:col-span-2 lg:col-span-3">
                   <label className="label">What changed in this version</label>
-                  <input className="input" value={q.changeSummary ?? ""} disabled={locked} onChange={(e) => set({ changeSummary: e.target.value })} />
+                  <input className="input" value={q.changeSummary ?? ""} disabled={readOnly} onChange={(e) => set({ changeSummary: e.target.value })} />
                 </div>
               )}
             </div>
           </Card>
 
           <Card title={`Items (${q.items.length}) · ${sections.length} area${sections.length === 1 ? "" : "s"}`}>
-            <LineItemsEditor items={q.items} onChange={(items) => set({ items })} showSection showCategory showGst={false} readOnly={locked} />
+            <LineItemsEditor items={q.items} onChange={(items) => set({ items })} showSection showCategory showGst={false} readOnly={readOnly} />
           </Card>
 
           <div className="grid gap-5 md:grid-cols-2">
             <Card title="Terms & conditions">
-              <textarea className="input" rows={7} value={q.terms ?? ""} disabled={locked} onChange={(e) => set({ terms: e.target.value })} placeholder="Default terms from settings are added automatically" />
+              <textarea className="input" rows={7} value={q.terms ?? ""} disabled={readOnly} onChange={(e) => set({ terms: e.target.value })} placeholder="Default terms from settings are added automatically" />
             </Card>
             <Card title="Internal notes">
-              <textarea className="input" rows={7} value={q.notes ?? ""} disabled={locked} onChange={(e) => set({ notes: e.target.value })} />
+              <textarea className="input" rows={7} value={q.notes ?? ""} disabled={readOnly} onChange={(e) => set({ notes: e.target.value })} />
             </Card>
           </div>
         </div>
@@ -347,19 +370,19 @@ function Editor({ initial }: { initial: Q }) {
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="label">Discount</label>
-                  <select className="input" value={q.discountType} disabled={locked} onChange={(e) => set({ discountType: e.target.value as any })}>
+                  <select className="input" value={q.discountType} disabled={readOnly} onChange={(e) => set({ discountType: e.target.value as any })}>
                     <option value="amount">₹ Amount</option>
                     <option value="percent">% Percent</option>
                   </select>
                 </div>
                 <div>
                   <label className="label">&nbsp;</label>
-                  <input type="number" className="input" value={q.discountValue} disabled={locked} onChange={(e) => set({ discountValue: Number(e.target.value) })} />
+                  <input type="number" className="input" value={q.discountValue} disabled={readOnly} onChange={(e) => set({ discountValue: Number(e.target.value) })} />
                 </div>
               </div>
               <div>
                 <label className="label">GST %</label>
-                <select className="input" value={q.taxRate} disabled={locked} onChange={(e) => set({ taxRate: Number(e.target.value) })}>
+                <select className="input" value={q.taxRate} disabled={readOnly} onChange={(e) => set({ taxRate: Number(e.target.value) })}>
                   {[0, 5, 12, 18, 28].map((g) => <option key={g} value={g}>{g}%</option>)}
                 </select>
               </div>
@@ -387,12 +410,12 @@ function Editor({ initial }: { initial: Q }) {
         </div>
       </div>
 
-      <Modal open={!!feedback} onClose={() => setFeedback(null)} title={feedback === "rejected" ? "Quotation rejected" : "Client requested changes"} footer={<><Button variant="secondary" onClick={() => setFeedback(null)}>Cancel</Button><Button onClick={() => (setStatus(feedback!, fbText), setFeedback(null))}>Save</Button></>}>
+      <Modal open={!!feedback} onClose={() => setFeedback(null)} title={feedback === "rejected" ? "Quotation rejected" : "Client requested changes"} footer={<><Button variant="secondary" onClick={() => setFeedback(null)}>Cancel</Button><Button loading={busy} onClick={() => (setStatus(feedback!, fbText), setFeedback(null))}>Save</Button></>}>
         <label className="label">Client feedback</label>
         <textarea className="input" rows={4} value={fbText} onChange={(e) => setFbText(e.target.value)} />
         {feedback === "changes_requested" && <p className="mt-2 text-xs text-muted">Next: click “Revise” to create v{(q.version ?? 1) + 1} with the changes.</p>}
       </Modal>
-      <Modal open={revise} onClose={() => setRevise(false)} title={`Create version ${(q.version ?? 1) + 1}`} footer={<><Button variant="secondary" onClick={() => setRevise(false)}>Cancel</Button><Button icon={<Plus className="size-4" />} onClick={doRevise}>Create version</Button></>}>
+      <Modal open={revise} onClose={() => setRevise(false)} title={`Create version ${(q.version ?? 1) + 1}`} footer={<><Button variant="secondary" onClick={() => setRevise(false)}>Cancel</Button><Button icon={<Plus className="size-4" />} loading={busy} onClick={doRevise}>Create version</Button></>}>
         <p className="mb-3 text-sm text-muted">A copy of this quotation is created as a new draft version. Open drafts of older versions are marked superseded.</p>
         <label className="label">What will change?</label>
         <input className="input" value={reviseText} onChange={(e) => setReviseText(e.target.value)} placeholder="e.g. Kitchen changed to acrylic finish" />

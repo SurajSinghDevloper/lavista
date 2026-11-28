@@ -30,7 +30,13 @@ const nextConfig: NextConfig = {
   },
   async headers() {
     return [
-      { source: "/:path*", headers: securityHeaders },
+      // every page: no framing at all …
+      { source: "/:path((?!api/v1/files/[^/]+/download).*)", headers: securityHeaders },
+      // … except our own file previews (PDF shown inside the app's viewer) – same origin only
+      {
+        source: "/api/v1/files/:id/download",
+        headers: securityHeaders.map((h) => (h.key === "X-Frame-Options" ? { ...h, value: "SAMEORIGIN" } : h)),
+      },
       { source: "/api/:path*", headers: [{ key: "Cache-Control", value: "no-store" }] },
     ];
   },

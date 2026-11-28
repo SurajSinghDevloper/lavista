@@ -1,4 +1,4 @@
-import { ATTENDANCE_STATUS, RECURRENCE, TASK_CATEGORIES, TASK_PRIORITY, TASK_STATUS, values } from "@/lib/constants";
+import { ATTENDANCE_STATUS, RECURRENCE, TASK_PRIORITY, TASK_STATUS, values } from "@/lib/constants";
 import { Schema } from "mongoose";
 import { defineModel, LocationSchema, makeSchema, ObjectId } from "./_base";
 
@@ -29,7 +29,7 @@ const TaskSchema = makeSchema({
   description: String,
   project: { type: ObjectId, ref: "Project", index: true },
   lead: { type: ObjectId, ref: "Lead" },
-  category: { type: String, enum: values(TASK_CATEGORIES), default: "site", index: true },
+  category: { type: String, default: "site", index: true },
   assignedTo: { type: ObjectId, ref: "User", index: true },
   contractor: { type: ObjectId, ref: "Contractor" },
   assignedBy: { type: ObjectId, ref: "User", index: true },

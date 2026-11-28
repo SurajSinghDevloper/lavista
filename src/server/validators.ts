@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { OPTION_VALUE_RE } from "@/lib/options";
 
 export const zId = z.string().regex(/^[a-f0-9]{24}$/i, "Invalid id");
 
@@ -43,6 +44,10 @@ export const zOptPhone = z.preprocess(emptyToUndef, zPhone.optional());
 export const zEnum = <T extends readonly [string, ...string[]]>(vals: T) => z.enum(vals);
 export const zOptEnum = <T extends readonly [string, ...string[]]>(vals: T) =>
   z.preprocess(emptyToUndef, z.enum(vals).optional());
+
+/** Value from a client-managed dropdown (Settings → Dropdown options), e.g. a trade or unit. */
+export const zOption = z.string().trim().regex(OPTION_VALUE_RE, "Please choose a valid option");
+export const zOptOption = z.preprocess(emptyToUndef, zOption.optional());
 
 export const zTags = z.array(z.string().trim().max(50)).max(30).optional();
 

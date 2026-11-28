@@ -37,10 +37,16 @@ function DesignDrawer({ open, onClose, record, project, preset, onSaved }: { ope
     setProj(project ?? record?.project?.id ?? null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, record]);
+  // final / superseded versions keep their status – "Mark final" on a version is what changes it
+  const statusLocked = !!record && ["approved", "superseded"].includes(record.status);
+  const fields = statusLocked
+    ? designFields.map((x) => (x.name === "status" ? { ...x, options: DESIGN_STATUS, disabled: true, help: "Set by “Mark final” – details below can still be edited" } : x))
+    : designFields;
   const save = async () => {
     setSaving(true);
     try {
-      const payload = { ...toPayload(designFields, f.values), files: files.map((x: any) => x.id ?? x) };
+      const payload: Record<string, any> = { ...toPayload(fields, f.values), files: files.map((x: any) => x.id ?? x) };
+      if (record?.id && (statusLocked || payload.status === record.status)) delete payload.status; // only send a real status change
       if (record?.id) await api.patch(`/designs/${record.id}`, payload);
       else await api.post("/designs", { ...payload, project: proj });
       toast.success(record ? "Design updated" : "New version uploaded");
@@ -69,7 +75,7 @@ function DesignDrawer({ open, onClose, record, project, preset, onSaved }: { ope
             <EntitySelect value={proj} onChange={setProj} config={REF.project} />
           </div>
         )}
-        <FormGrid fields={designFields} values={f.values} setValue={f.setValue} errors={f.errors} />
+        <FormGrid fields={fields} values={f.values} setValue={f.setValue} errors={f.errors} />
         <div>
           <label className="label">Files (PDF, JPG/PNG renders, DWG, SKP…)</label>
           <Attachments files={files} onChange={(ids) => setFiles((prev) => ids.map((id) => prev.find((p: any) => (p.id ?? p) === id) ?? id))} meta={{ category: f.values.type === "render" ? "render" : "design", project: proj ?? undefined, entityType: "Design" }} />

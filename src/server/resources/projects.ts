@@ -1,16 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Types } from "mongoose";
 import { z } from "zod";
-import {
-  DEFAULT_PAYMENT_SCHEDULE,
-  MILESTONE_STATUS,
-  PROJECT_STAGES,
-  PROJECT_STATUS,
-  PROPERTY_CONFIGS,
-  PROPERTY_TYPES,
-  labelOf,
-  values,
-} from "@/lib/constants";
+import { DEFAULT_PAYMENT_SCHEDULE, MILESTONE_STATUS, PROJECT_STAGES, PROJECT_STATUS, labelOf, values } from "@/lib/constants";
+import { can } from "@/lib/permissions";
 import { crud } from "../crud";
 import { api, assertId, badRequest, notFound, parseBody } from "../http";
 import {
@@ -19,22 +11,27 @@ import {
   DailyReport,
   Design,
   Expense,
+  FileModel,
+  FollowUp,
   GRN,
   Invoice,
+  Lead,
   MaterialRequest,
   Payment,
   Project,
   PurchaseOrder,
   Quotation,
   SiteVisit,
+  StockTxn,
   Task,
   WorkOrder,
   serialize,
 } from "../models";
 import { assertProjectAccess, audit, notify, projectFilter, round2 } from "../services/core";
-import { materialFromStockByProject, syncMilestones } from "../services/money";
+import { materialFromStockByProject, scheduleAmounts, syncMilestones } from "../services/money";
+import { istStartOfDay } from "../services/numbering";
 import { getSetting } from "../services/settings";
-import { aliasId, zDate, zId, zLocation, zMoney, zNum, zOptEnum, zPercent, zRef, zRefs, zStr, zTags, zText } from "../validators";
+import { aliasId, zDate, zId, zLocation, zMoney, zNum, zOptEnum, zOptOption, zPercent, zRef, zRefs, zStr, zTags, zText } from "../validators";
 
 const milestone = z.preprocess(aliasId, z.object({
   _id: zId.optional(),
@@ -53,8 +50,8 @@ const base = {
   siteAddress: zText(500),
   city: zText(100),
   location: zLocation,
-  propertyType: zOptEnum(values(PROPERTY_TYPES)),
-  propertyConfig: zOptEnum(values(PROPERTY_CONFIGS)),
+  propertyType: zOptOption,
+  propertyConfig: zOptOption,
   areaSqft: zNum,
   scope: z.array(z.string().max(50)).max(20).optional(),
   description: zText(5000),
@@ -83,11 +80,26 @@ const people = [
 ];
 
 function applySchedule(schedule: any[], value: number) {
-  return schedule.map((m) => ({
-    ...m,
-    amount: m.percent ? Math.round((value * m.percent) / 100) : m.amount ?? 0,
-  }));
+  const amounts = scheduleAmounts(schedule, value); // rounding difference goes to the last milestone
+  return schedule.map((m, i) => ({ ...m, amount: amounts[i] }));
 }
+
+/** Records that keep a site from being deleted (it must be closed / cancelled instead). */
+const SITE_RECORDS: [model: any, one: string, many: string][] = [
+  [Payment, "payment", "payments"],
+  [Expense, "expense", "expenses"],
+  [Invoice, "invoice", "invoices"],
+  [Quotation, "quotation", "quotations"],
+  [PurchaseOrder, "purchase order", "purchase orders"],
+  [WorkOrder, "work order", "work orders"],
+  [MaterialRequest, "material request", "material requests"],
+  [GRN, "goods receipt (GRN)", "goods receipts (GRN)"],
+  [StockTxn, "stock entry", "stock entries"],
+  [Design, "design", "designs"],
+  [Task, "task", "tasks"],
+  [DailyReport, "daily report", "daily reports"],
+  [FileModel, "file", "files"],
+];
 
 export const projects = crud({
   model: Project,
@@ -135,15 +147,23 @@ export const projects = crud({
     await notify(added, { title: "You were added to a site", message: `${doc.projectNo} – ${doc.name}`, link: `/projects/${doc._id}`, type: "project" }, ctx.user.id);
   },
   beforeDelete: async (doc) => {
-    const [pay, exp] = await Promise.all([Payment.exists({ project: doc._id }), Expense.exists({ project: doc._id })]);
-    if (pay || exp) throw badRequest("Site has payments/expenses. Mark it Cancelled instead of deleting.");
+    const counts: number[] = await Promise.all(SITE_RECORDS.map(([model]) => model.countDocuments({ project: doc._id })));
+    const found = SITE_RECORDS.flatMap(([, one, many], i) => (counts[i] ? [`${counts[i]} ${counts[i] === 1 ? one : many}`] : []));
+    if (found.length) {
+      const list = found.length === 1 ? found[0] : `${found.slice(0, -1).join(", ")} and ${found[found.length - 1]}`;
+      throw badRequest(`This site has ${list} – close or cancel the site instead of deleting it.`);
+    }
+    // Nothing important on record: remove site-only leftovers and hand pre-sales items back to the lead.
     await Promise.all([
-      Design.deleteMany({ project: doc._id }),
-      Task.deleteMany({ project: doc._id }),
-      DailyReport.deleteMany({ project: doc._id }),
       Checklist.deleteMany({ project: doc._id }),
-      SiteVisit.deleteMany({ project: doc._id }),
+      SiteVisit.deleteMany({ project: doc._id, lead: null }),
+      SiteVisit.updateMany({ project: doc._id, lead: { $ne: null } }, { $unset: { project: 1 } }),
+      FollowUp.deleteMany({ project: doc._id, lead: null }),
+      FollowUp.updateMany({ project: doc._id, lead: { $ne: null } }, { $unset: { project: 1 } }),
     ]);
+    // A lead converted into this site goes back to the pipeline (and can be converted again).
+    await Lead.updateMany({ project: doc._id, status: "won" }, { $set: { status: "negotiation" } });
+    await Lead.updateMany({ project: doc._id }, { $unset: { project: 1, convertedAt: 1 } });
   },
 });
 
@@ -210,8 +230,10 @@ export const projectSummary = api({ perm: "projects:read" }, async ({ params, us
   const pid = new Types.ObjectId(id);
   const p = await Project.findById(pid).select("contractValue budget").lean<any>();
   if (!p) throw notFound();
+  // Received / spent / balance only for people who handle money (not supervisors / designers).
+  const showFinance = can(user.permissions, "accounts:read") || can(user.permissions, "payments:read");
   const [finance, tasks, designs, quotes, mrs, pos, grns, reports, checklists, workorders] = await Promise.all([
-    projectFinance(pid),
+    showFinance ? projectFinance(pid) : null,
     Task.aggregate([{ $match: { project: pid } }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
     Design.aggregate([{ $match: { project: pid } }, { $group: { _id: "$type", n: { $sum: 1 }, final: { $sum: { $cond: ["$isFinal", 1, 0] } } } }]),
     Quotation.countDocuments({ project: pid }),
@@ -226,11 +248,12 @@ export const projectSummary = api({ perm: "projects:read" }, async ({ params, us
     ]),
     WorkOrder.countDocuments({ project: pid }),
   ]);
-  const overdue = await Task.countDocuments({ project: pid, status: { $nin: ["done", "cancelled"] }, dueDate: { $lt: new Date() } });
+  // overdue = due day (India time) is over, not "05:30 IST on the due day"
+  const overdue = await Task.countDocuments({ project: pid, status: { $nin: ["done", "cancelled"] }, dueDate: { $lt: istStartOfDay() } });
   return {
     contractValue: p.contractValue ?? 0,
     budget: p.budget ?? 0,
-    outstanding: round2((p.contractValue ?? 0) - finance.received),
+    outstanding: finance ? round2((p.contractValue ?? 0) - finance.received) : null, // would reveal "received"
     finance,
     tasks: Object.fromEntries(tasks.map((t: any) => [t._id, t.n])),
     overdueTasks: overdue,

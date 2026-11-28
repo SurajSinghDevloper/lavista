@@ -1,13 +1,14 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Types } from "mongoose";
 import { z } from "zod";
-import { ATTENDANCE_STATUS, RECURRENCE, TASK_CATEGORIES, TASK_PRIORITY, TASK_STATUS, values } from "@/lib/constants";
+import { ATTENDANCE_STATUS, RECURRENCE, TASK_PRIORITY, TASK_STATUS, values } from "@/lib/constants";
 import { can } from "@/lib/permissions";
 import { crud } from "../crud";
 import { api, assertId, badRequest, conflict, forbidden, notFound, parseBody, type Ctx } from "../http";
 import { Attendance, Project, Task, User, serialize } from "../models";
 import { assertProjectAccess, audit, nextNumber, notify } from "../services/core";
-import { aliasId, zBool, zDate, zId, zLocation, zOptEnum, zRef, zRefs, zStr, zText } from "../validators";
+import { istStartOfDay } from "../services/numbering";
+import { aliasId, zBool, zDate, zId, zLocation, zOptEnum, zOptOption, zRef, zRefs, zStr, zText } from "../validators";
 
 const TZ = process.env.APP_TIMEZONE || "Asia/Kolkata";
 export const localDate = (d = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(d);
@@ -20,7 +21,7 @@ const taskBase = {
   description: zText(10000),
   project: zRef,
   lead: zRef,
-  category: zOptEnum(values(TASK_CATEGORIES)),
+  category: zOptOption,
   assignedTo: zRef,
   contractor: zRef,
   startDate: zDate,
@@ -159,6 +160,38 @@ export const addTaskComment = api({ perm: "tasks:read" }, async ({ req, params, 
   return serialize(fresh.comments);
 });
 
+async function loadTaskComment(ctx: Ctx) {
+  const id = assertId(ctx.params.id);
+  const commentId = assertId(ctx.params.commentId, "comment");
+  const t = await Task.findOne({ _id: id, ...taskScope(ctx) });
+  if (!t) throw notFound("Task not found");
+  const c = t.comments.id(commentId);
+  if (!c) throw notFound("This comment could not be found. It may have been deleted – please refresh.");
+  return { t, c, id };
+}
+
+const freshComments = async (id: string) =>
+  serialize((await Task.findById(id).populate([{ path: "comments.by", select: "name" }]).select("comments").lean<any>())?.comments ?? []);
+
+/** Fix a typo in your own comment. */
+export const updateTaskComment = api({ perm: "tasks:read" }, async (ctx) => {
+  const { text } = await parseBody(ctx.req, z.object({ text: zStr(5000) }));
+  const { t, c, id } = await loadTaskComment(ctx);
+  if (String(c.by) !== ctx.user.id) throw forbidden("You can only edit your own comments.");
+  c.text = text;
+  await t.save();
+  return freshComments(id);
+});
+
+/** Authors can remove their own comments; managers (tasks:all) can remove any. */
+export const deleteTaskComment = api({ perm: "tasks:read" }, async (ctx) => {
+  const { t, c, id } = await loadTaskComment(ctx);
+  if (String(c.by) !== ctx.user.id && !can(ctx.user.permissions, "tasks:all")) throw forbidden("You can only delete your own comments.");
+  c.deleteOne();
+  await t.save();
+  return freshComments(id);
+});
+
 /** Distribute many tasks at once (daily allotment). */
 export const bulkTasks = api({ perm: "tasks:write" }, async ({ req, user, ip }) => {
   const body = await parseBody(req, z.object({ tasks: z.array(taskCreate).min(1).max(100) }));
@@ -180,10 +213,9 @@ export const bulkTasks = api({ perm: "tasks:write" }, async ({ req, user, ip }) 
 
 /** Team workload: open / overdue / due today / done today per member. */
 export const taskWorkload = api({ perm: "tasks:read" }, async ({ user }) => {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
+  // "today" is the India day, whatever timezone the server runs in
+  const start = istStartOfDay();
+  const end = istStartOfDay(new Date(), 1);
   const match = can(user.permissions, "tasks:all") ? { assignedTo: { $ne: null } } : { assignedTo: new Types.ObjectId(user.id) };
   const rows = await Task.aggregate([
     { $match: match },

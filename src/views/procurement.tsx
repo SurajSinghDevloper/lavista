@@ -1,7 +1,7 @@
 "use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { ArrowLeft, CheckCircle2, PackageMinus, PackagePlus, Plus, Printer, Save, ShoppingCart, SlidersHorizontal, Trash2, Truck, XCircle } from "lucide-react";
+import { ArrowLeft, CheckCircle2, PackageMinus, PackagePlus, Pencil, Plus, Printer, Save, ShoppingCart, SlidersHorizontal, Trash2, Truck, XCircle } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { use, useEffect, useState } from "react";
@@ -13,7 +13,7 @@ import { Badge, Button, Card, Drawer, Empty, KV, LoadError, Loading, Modal, Page
 import { invalidate, useList, useOne } from "@/hooks/use-api";
 import { api } from "@/lib/api-client";
 import { DELIVERY_LOCATIONS, MATERIAL_CATEGORIES, MR_STATUS, PAYMENT_STATUS, PO_STATUS, STOCK_TXN_TYPES, TRADES, UNITS, labelOf } from "@/lib/constants";
-import { date, dateTime, money, number, toInputDate } from "@/lib/format";
+import { date, dateTime, money, number, toInputDate, toInputDateTime } from "@/lib/format";
 import { expenseColumns, materialFields, vendorColumns, vendorFields } from "./config";
 
 /* ---------------------------- Material requests -------------------------- */
@@ -47,11 +47,14 @@ function MRDrawer({ open, onClose, project, record, onSaved }: { open: boolean; 
     }
   }, [open, project, record]);
   const set = (i: number, p: Partial<MRItem>) => setItems((l) => l.map((x, k) => (k === i ? { ...x, ...p } : x)));
+  // after approval stock may already be issued / ordered against the lines – only dates, priority and notes can change
+  const limited = !!record && ["approved", "ordered", "issued"].includes(record.status);
+  const resubmit = record?.status === "rejected";
   const save = async () => {
     setSaving(true);
     try {
       const body = {
-        trade: trade || undefined,
+        ...(limited ? {} : { trade: trade || undefined }),
         requiredBy: requiredBy || null,
         priority,
         notes,
@@ -59,7 +62,7 @@ function MRDrawer({ open, onClose, project, record, onSaved }: { open: boolean; 
       };
       if (record) await api.patch(`/material-requests/${record.id}`, body);
       else await api.post("/material-requests", { ...body, project: proj });
-      toast.success(record ? "Request updated" : "Material request sent");
+      toast.success(resubmit ? "Request corrected and sent for approval again" : record ? "Request updated" : "Material request sent");
       onSaved();
       onClose();
     } catch (e) {
@@ -69,13 +72,23 @@ function MRDrawer({ open, onClose, project, record, onSaved }: { open: boolean; 
     }
   };
   return (
-    <Drawer open={open} onClose={onClose} width="max-w-3xl" title={record ? `Edit ${record.mrNo}` : "Material request (from site)"} footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={saving} onClick={save}>{record ? "Save changes" : "Send request"}</Button></>}>
+    <Drawer open={open} onClose={onClose} width="max-w-3xl" title={record ? `Edit ${record.mrNo}` : "Material request (from site)"} footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={saving} onClick={save}>{resubmit ? "Save & resubmit" : record ? "Save changes" : "Send request"}</Button></>}>
       <div className="space-y-4">
+        {resubmit && (
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            This request was rejected{record.rejectionReason ? `: “${record.rejectionReason}”` : ""}. Saving your changes sends it back for approval.
+          </p>
+        )}
+        {limited && (
+          <p className="rounded-lg bg-stone-50 px-3 py-2 text-sm text-stone-600">
+            Already approved – items and quantities are locked because stock may be issued or ordered against them. You can change the required-by date, priority and notes (also on each item).
+          </p>
+        )}
         <div className="grid gap-3 sm:grid-cols-2">
           {!project && !record && <div className="sm:col-span-2"><label className="label">Site *</label><EntitySelect value={proj} onChange={setProj} config={REF.activeProject} /></div>}
           <div>
             <label className="label">For work</label>
-            <select className="input" value={trade} onChange={(e) => setTrade(e.target.value)}>
+            <select className="input" value={trade} disabled={limited} onChange={(e) => setTrade(e.target.value)}>
               <option value="">—</option>
               {TRADES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
@@ -90,14 +103,15 @@ function MRDrawer({ open, onClose, project, record, onSaved }: { open: boolean; 
           <h4 className="text-sm font-semibold">Items</h4>
           {items.map((it, i) => (
             <div key={i} className="grid gap-2 rounded-lg border border-line p-2 sm:grid-cols-12">
-              <EntitySelect className="sm:col-span-4" value={it.material ?? null} config={REF.material} placeholder="From catalog (optional)" onChange={(id, row) => set(i, id && row ? { material: id, description: it.description || row.name, unit: row.unit, category: row.category } : { material: null })} />
-              <input className="input sm:col-span-4" placeholder="Description" value={it.description} onChange={(e) => set(i, { description: e.target.value })} />
-              <input type="number" min={0} step="any" className="input sm:col-span-2" value={it.qty} onChange={(e) => set(i, { qty: Number(e.target.value) })} />
-              <select className="input sm:col-span-1 px-1" value={it.unit} onChange={(e) => set(i, { unit: e.target.value })}>{UNITS.map((u) => <option key={u.value} value={u.value}>{u.label}</option>)}</select>
-              <button className="text-stone-400 hover:text-red-600 sm:col-span-1" onClick={() => setItems((l) => l.filter((_, k) => k !== i))}><Trash2 className="mx-auto size-4" /></button>
+              <EntitySelect className="sm:col-span-4" value={it.material ?? null} config={REF.material} placeholder="From catalog (optional)" disabled={limited} onChange={(id, row) => set(i, id && row ? { material: id, description: it.description || row.name, unit: row.unit, category: row.category } : { material: null })} />
+              <input className="input sm:col-span-4" placeholder="Description" value={it.description} disabled={limited} onChange={(e) => set(i, { description: e.target.value })} />
+              <input type="number" min={0} step="any" className="input sm:col-span-2" value={it.qty} disabled={limited} onChange={(e) => set(i, { qty: Number(e.target.value) })} />
+              <select className="input pl-1 pr-6 sm:col-span-1" value={it.unit} disabled={limited} onChange={(e) => set(i, { unit: e.target.value })}>{UNITS.map((u) => <option key={u.value} value={u.value}>{u.label}</option>)}</select>
+              {limited ? <span className="sm:col-span-1" /> : <button className="text-stone-400 hover:text-red-600 sm:col-span-1" title="Remove item" onClick={() => setItems((l) => l.filter((_, k) => k !== i))}><Trash2 className="mx-auto size-4" /></button>}
+              <input className="input py-1.5 text-xs sm:col-span-12" placeholder="Note for this item (brand, size, colour, where it's needed…)" value={it.notes ?? ""} onChange={(e) => set(i, { notes: e.target.value })} />
             </div>
           ))}
-          <Button size="xs" variant="secondary" icon={<Plus className="size-3.5" />} onClick={() => setItems((l) => [...l, { description: "", qty: 1, unit: "nos" }])}>Add item</Button>
+          {!limited && <Button size="xs" variant="secondary" icon={<Plus className="size-3.5" />} onClick={() => setItems((l) => [...l, { description: "", qty: 1, unit: "nos" }])}>Add item</Button>}
         </div>
         <div><label className="label">Notes</label><textarea className="input" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
       </div>
@@ -111,12 +125,15 @@ function IssueModal({ open, onClose, project, mr, mode = "issue", onDone }: { op
   const [issuedTo, setIssuedTo] = useState("");
   const [notes, setNotes] = useState("");
   const [rows, setRows] = useState<{ material: any; qty: number; mrItem?: string; name?: string }[]>([]);
+  const [saving, setSaving] = useState(false);
   useEffect(() => {
     if (!open) return;
     setProj(project ?? mr?.project?.id ?? null);
     setRows(mr ? mr.items.filter((i: any) => i.material).map((i: any) => ({ material: i.material, qty: Math.max(0, i.qty - (i.issuedQty ?? 0)), mrItem: i.id })) : [{ material: null, qty: 1 }]);
   }, [open, project, mr]);
   const submit = async () => {
+    if (saving) return; // a double tap must not issue the stock twice
+    setSaving(true);
     try {
       const r: any = await api.post(`/inventory/${mode}`, {
         project: proj,
@@ -131,10 +148,12 @@ function IssueModal({ open, onClose, project, mr, mode = "issue", onDone }: { op
       onClose();
     } catch (e) {
       toast.error(e);
+    } finally {
+      setSaving(false);
     }
   };
   return (
-    <Modal open={open} onClose={onClose} size="lg" title={mode === "issue" ? "Issue factory stock to site" : "Return material from site to factory"} footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button onClick={submit}>{mode === "issue" ? "Issue" : "Return"}</Button></>}>
+    <Modal open={open} onClose={onClose} size="lg" title={mode === "issue" ? "Issue factory stock to site" : "Return material from site to factory"} footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={saving} onClick={submit}>{mode === "issue" ? "Issue" : "Return"}</Button></>}>
       <div className="space-y-3">
         {!project && !mr && <div><label className="label">Site</label><EntitySelect value={proj} onChange={setProj} config={REF.activeProject} /></div>}
         {rows.map((r, i) => (
@@ -160,6 +179,9 @@ function MRDetail({ id, onClose, onChanged }: { id: string | null; onClose: () =
   const { data: mr, mutate } = useOne<any>(id ? `/material-requests/${id}` : null);
   const [issue, setIssue] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState("");
+  const [deciding, setDeciding] = useState(false);
   const remove = async () => {
     if (!(await confirm({ title: `Delete ${mr.mrNo}?`, danger: true, confirmText: "Delete" }))) return;
     try {
@@ -172,14 +194,19 @@ function MRDetail({ id, onClose, onChanged }: { id: string | null; onClose: () =
     }
   };
   const decide = async (action: "approve" | "reject") => {
-    const reason = action === "reject" ? window.prompt("Reason for rejection?") ?? "" : "";
+    if (action === "reject" && !reason.trim()) return toast.error("Please write why the request is rejected – the site sees this reason");
+    setDeciding(true);
     try {
-      await api.post(`/material-requests/${id}/decide`, { action, reason });
+      await api.post(`/material-requests/${id}/decide`, { action, reason: action === "reject" ? reason.trim() : "" });
       toast.success(action === "approve" ? "Approved" : "Rejected");
+      setRejecting(false);
+      setReason("");
       mutate();
       onChanged();
     } catch (e) {
       toast.error(e);
+    } finally {
+      setDeciding(false);
     }
   };
   return (
@@ -211,8 +238,8 @@ function MRDetail({ id, onClose, onChanged }: { id: string | null; onClose: () =
           <div className="flex flex-wrap gap-2 border-t border-line pt-4">
             {mr.status === "pending" && can("material_requests:approve") && (
               <>
-                <Button variant="success" icon={<CheckCircle2 className="size-4" />} onClick={() => decide("approve")}>Approve</Button>
-                <Button variant="secondary" icon={<XCircle className="size-4" />} onClick={() => decide("reject")}>Reject</Button>
+                <Button variant="success" icon={<CheckCircle2 className="size-4" />} loading={deciding} onClick={() => decide("approve")}>Approve</Button>
+                <Button variant="secondary" icon={<XCircle className="size-4" />} disabled={deciding} onClick={() => setRejecting(true)}>Reject</Button>
               </>
             )}
             {["approved", "issued", "ordered"].includes(mr.status) && can("inventory:write") && (
@@ -221,8 +248,10 @@ function MRDetail({ id, onClose, onChanged }: { id: string | null; onClose: () =
             {["approved", "issued"].includes(mr.status) && can("purchase_orders:write") && (
               <Button icon={<ShoppingCart className="size-4" />} onClick={() => router.push(`/procurement/orders/new?mr=${mr.id}`)}>Create purchase order</Button>
             )}
-            {mr.status === "pending" && can("material_requests:write") && (
-              <Button variant="secondary" onClick={() => setEditing(true)}>Edit request</Button>
+            {["pending", "rejected", "approved", "ordered", "issued"].includes(mr.status) && can("material_requests:write") && (
+              <Button variant="secondary" icon={<Pencil className="size-4" />} onClick={() => setEditing(true)}>
+                {mr.status === "rejected" ? "Edit & resubmit" : mr.status === "pending" ? "Edit request" : "Edit date & notes"}
+              </Button>
             )}
             {["pending", "rejected"].includes(mr.status) && can("material_requests:delete") && (
               <Button variant="ghost" className="text-red-600" icon={<Trash2 className="size-4" />} onClick={remove}>Delete</Button>
@@ -232,6 +261,16 @@ function MRDetail({ id, onClose, onChanged }: { id: string | null; onClose: () =
       )}
       <IssueModal open={issue} onClose={() => setIssue(false)} mr={mr} onDone={() => (mutate(), onChanged())} />
       <MRDrawer open={editing} onClose={() => setEditing(false)} record={mr} onSaved={() => (mutate(), onChanged())} />
+      <Modal
+        open={rejecting}
+        onClose={() => setRejecting(false)}
+        title={`Reject ${mr?.mrNo ?? "request"}`}
+        footer={<><Button variant="secondary" onClick={() => setRejecting(false)}>Cancel</Button><Button variant="danger" loading={deciding} onClick={() => decide("reject")}>Reject request</Button></>}
+      >
+        <label className="label">Reason (shown to the site) *</label>
+        <textarea className="input" rows={3} autoFocus value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Quantity too high – 6 sheets are enough for this wall" />
+        <p className="mt-2 text-xs text-muted">The site can correct the request and send it again.</p>
+      </Modal>
     </Drawer>
   );
 }
@@ -310,35 +349,43 @@ export function PurchaseOrdersView({ project }: { project?: string }) {
   );
 }
 
-function POEditor({ initial }: { initial: any }) {
+function POEditor({ initial, onDone, onCancel }: { initial: any; onDone?: () => void; onCancel?: () => void }) {
   const router = useRouter();
   const toast = useToast();
   const [po, setPo] = useState<any>(initial);
   const [saving, setSaving] = useState(false);
   const set = (p: any) => setPo((x: any) => ({ ...x, ...p }));
+  // once goods are received the lines, vendor and site are history – only the header details stay editable
+  const itemsLocked = ["received", "partially_received", "cancelled"].includes(po.status);
   const subtotal = po.items.reduce((s: number, i: LineItem) => s + i.qty * i.rate, 0);
   const tax = po.items.reduce((s: number, i: LineItem) => s + (i.qty * i.rate * (i.gstRate ?? 0)) / 100, 0);
   const save = async (status: "draft" | "ordered") => {
     setSaving(true);
     try {
-      const payload = {
-        vendor: po.vendor?.id ?? po.vendor,
-        project: po.project?.id ?? po.project ?? null,
-        materialRequest: po.materialRequest?.id ?? po.materialRequest ?? null,
-        deliverTo: po.deliverTo,
+      const header = {
         category: po.category || undefined,
         date: po.date || null,
         expectedDate: po.expectedDate || null,
-        items: po.items.map(({ receivedQty: _r, ...i }: any) => (void _r, { ...i, material: i.material?.id ?? i.material ?? null })),
         freight: po.freight || 0,
         terms: po.terms,
         notes: po.notes,
-        ...(po.id ? {} : { status }),
       };
+      const payload = itemsLocked
+        ? header
+        : {
+            ...header,
+            vendor: po.vendor?.id ?? po.vendor,
+            project: po.project?.id ?? po.project ?? null,
+            materialRequest: po.materialRequest?.id ?? po.materialRequest ?? null,
+            deliverTo: po.deliverTo,
+            items: po.items.map(({ receivedQty: _r, ...i }: any) => (void _r, { ...i, material: i.material?.id ?? i.material ?? null })),
+            ...(po.id ? {} : { status }),
+          };
       const r: any = po.id ? await api.patch(`/purchase-orders/${po.id}`, payload) : await api.post("/purchase-orders", payload);
       toast.success("Purchase order saved");
       invalidate("/purchase-orders", "/material-requests");
-      router.push(`/procurement/orders/${r.id}`);
+      if (onDone) onDone();
+      else router.push(`/procurement/orders/${r.id}`);
     } catch (e) {
       toast.error(e);
     } finally {
@@ -352,18 +399,25 @@ function POEditor({ initial }: { initial: any }) {
         title={po.id ? `Edit ${po.poNo}` : "New purchase order"}
         actions={
           <>
+            {po.id && onCancel && <Button variant="secondary" onClick={onCancel}>Cancel</Button>}
             {!po.id && <Button variant="secondary" loading={saving} onClick={() => save("draft")}>Save draft</Button>}
             <Button icon={<Save className="size-4" />} loading={saving} onClick={() => save("ordered")}>{po.id ? "Save" : "Place order"}</Button>
           </>
         }
       />
+      {itemsLocked && (
+        <p className="rounded-lg border border-line bg-stone-50 px-4 py-2.5 text-sm text-stone-600">
+          Goods have been received against this PO, so the items, vendor and site are locked. You can still change the dates, category, freight, terms and notes.
+        </p>
+      )}
       <Card title="Order details">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <div><label className="label">Vendor *</label><EntitySelect value={po.vendor ?? null} onChange={(id) => set({ vendor: id })} config={REF.vendor} /></div>
-          <div><label className="label">Site (leave empty for factory stock)</label><EntitySelect value={po.project ?? null} onChange={(id) => set({ project: id, deliverTo: id ? "site" : "factory" })} config={REF.project} /></div>
+          <div><label className="label">Vendor *</label><EntitySelect value={po.vendor ?? null} onChange={(id) => set({ vendor: id })} config={REF.vendor} disabled={itemsLocked} /></div>
+          <div><label className="label">Site (leave empty for factory stock)</label><EntitySelect value={po.project ?? null} onChange={(id) => set({ project: id, deliverTo: id ? "site" : "factory" })} config={REF.project} disabled={itemsLocked} /></div>
           <div>
             <label className="label">Deliver to</label>
-            <select className="input" value={po.deliverTo} onChange={(e) => set({ deliverTo: e.target.value })}>{DELIVERY_LOCATIONS.map((d) => <option key={d.value} value={d.value}>{d.label}</option>)}</select>
+            <select className="input" value={po.deliverTo} disabled={itemsLocked} onChange={(e) => set({ deliverTo: e.target.value })}>{DELIVERY_LOCATIONS.map((d) => <option key={d.value} value={d.value}>{d.label}</option>)}</select>
+            {po.project && po.deliverTo === "factory" && <p className="mt-1 text-xs text-muted">Goes into factory stock – the site is charged when the material is issued to it.</p>}
           </div>
           <div>
             <label className="label">Category (for GRN)</label>
@@ -374,7 +428,7 @@ function POEditor({ initial }: { initial: any }) {
         </div>
       </Card>
       <Card title="Items">
-        <LineItemsEditor items={po.items} onChange={(items) => set({ items })} showMaterial />
+        <LineItemsEditor items={po.items} onChange={(items) => set({ items })} showMaterial readOnly={itemsLocked} />
         <div className="mt-4 flex flex-wrap items-start justify-between gap-4">
           <div className="w-40"><label className="label">Freight / cartage</label><input type="number" className="input" value={po.freight ?? 0} onChange={(e) => set({ freight: Number(e.target.value) })} /></div>
           <Totals rows={[{ label: "Subtotal", value: subtotal }, { label: "GST", value: tax }, { label: "Freight", value: po.freight, hidden: !po.freight }, { label: "Total", value: subtotal + tax + (po.freight || 0), strong: true }]} />
@@ -410,10 +464,13 @@ function ReceiveModal({ po, open, onClose, onDone }: { po: any; open: boolean; o
   const [vehicle, setVehicle] = useState("");
   const [notes, setNotes] = useState("");
   const [photos, setPhotos] = useState<any[]>([]);
+  const [saving, setSaving] = useState(false);
   useEffect(() => {
     if (open) setRows(po.items.map((i: any) => ({ poItem: i.id, material: i.material?.id ?? i.material, description: i.description, unit: i.unit, orderedQty: i.qty, pending: Math.max(0, i.qty - (i.receivedQty ?? 0)), receivedQty: Math.max(0, i.qty - (i.receivedQty ?? 0)), rejectedQty: 0, rate: i.rate, remarks: "" })));
   }, [open, po]);
   const submit = async () => {
+    if (saving) return; // a double tap must not receive the goods twice
+    setSaving(true);
     try {
       await api.post("/grn", {
         purchaseOrder: po.id,
@@ -430,10 +487,12 @@ function ReceiveModal({ po, open, onClose, onDone }: { po: any; open: boolean; o
       onClose();
     } catch (e) {
       toast.error(e);
+    } finally {
+      setSaving(false);
     }
   };
   return (
-    <Modal open={open} onClose={onClose} size="xl" title={`Receive goods – ${po.poNo}`} footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button icon={<Truck className="size-4" />} onClick={submit}>Create GRN</Button></>}>
+    <Modal open={open} onClose={onClose} size="xl" title={`Receive goods – ${po.poNo}`} footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button icon={<Truck className="size-4" />} loading={saving} onClick={submit}>Create GRN</Button></>}>
       <p className="mb-3 text-sm text-muted">Delivered to <strong>{labelOf(DELIVERY_LOCATIONS, po.deliverTo)}</strong>{po.deliverTo === "factory" ? " — accepted qty is added to factory stock." : " — recorded against the site."}</p>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[640px] text-sm">
@@ -472,17 +531,22 @@ export function PurchaseOrderDetail({ params }: { params: Promise<{ id: string }
   const { rows: pays } = useList(can("expenses:read") ? "/expenses" : null, { purchaseOrder: id, limit: 50 });
   const [receive, setReceive] = useState(false);
   const [edit, setEdit] = useState(false);
+  const [busy, setBusy] = useState(false);
   if (isLoading) return <Loading />;
   if (!po) return error ? <LoadError error={error} onRetry={() => mutate()} /> : <Empty title="Purchase order not found" />;
-  if (edit) return <POEditor initial={{ ...po, date: toInputDate(po.date), expectedDate: toInputDate(po.expectedDate) }} />;
+  if (edit) return <POEditor initial={{ ...po, date: toInputDate(po.date), expectedDate: toInputDate(po.expectedDate) }} onDone={() => (setEdit(false), mutate())} onCancel={() => setEdit(false)} />;
   const status = async (s: string) => {
-    if (s === "cancelled" && !(await confirm({ title: "Cancel this PO?", danger: true, confirmText: "Cancel PO" }))) return;
+    if (s === "cancelled" && !(await confirm({ title: "Cancel this PO?", message: po.materialRequest ? `Its quantities go back to ${po.materialRequest.mrNo ?? "the material request"} so they can be ordered again.` : undefined, danger: true, confirmText: "Cancel PO" }))) return;
+    setBusy(true);
     try {
       await api.post(`/purchase-orders/${id}/status`, { status: s });
       mutate();
+      invalidate("/purchase-orders", "/material-requests");
       toast.success("Updated");
     } catch (e) {
       toast.error(e);
+    } finally {
+      setBusy(false);
     }
   };
   const canReceive = can("grn:write") && ["ordered", "partially_received", "draft"].includes(po.status);
@@ -495,9 +559,11 @@ export function PurchaseOrderDetail({ params }: { params: Promise<{ id: string }
         actions={
           <>
             <Button variant="secondary" icon={<Printer className="size-4" />} onClick={() => window.open(`/print/po/${id}`, "_blank")}>Print</Button>
-            {po.status === "draft" && can("purchase_orders:write") && <Button variant="secondary" onClick={() => status("ordered")}>Mark ordered</Button>}
-            {["draft", "ordered"].includes(po.status) && can("purchase_orders:write") && <Button variant="secondary" onClick={() => setEdit(true)}>Edit</Button>}
-            {["draft", "ordered"].includes(po.status) && can("purchase_orders:write") && <Button variant="ghost" className="text-red-600" onClick={() => status("cancelled")}>Cancel PO</Button>}
+            {po.status === "draft" && can("purchase_orders:write") && <Button variant="secondary" loading={busy} onClick={() => status("ordered")}>Mark ordered</Button>}
+            {["draft", "ordered", "partially_received", "received"].includes(po.status) && can("purchase_orders:write") && (
+              <Button variant="secondary" icon={<Pencil className="size-4" />} onClick={() => setEdit(true)}>{["draft", "ordered"].includes(po.status) ? "Edit" : "Edit details"}</Button>
+            )}
+            {["draft", "ordered"].includes(po.status) && can("purchase_orders:write") && <Button variant="ghost" className="text-red-600" disabled={busy} onClick={() => status("cancelled")}>Cancel PO</Button>}
             {canReceive && <Button icon={<Truck className="size-4" />} onClick={() => setReceive(true)}>Receive goods (GRN)</Button>}
           </>
         }
@@ -557,10 +623,74 @@ export function PurchaseOrderDetail({ params }: { params: Promise<{ id: string }
 }
 
 /* ---------------------------------- GRN ---------------------------------- */
-function GRNDetail({ id, onClose }: { id: string | null; onClose: () => void }) {
-  const { data: g } = useOne<any>(id ? `/grn/${id}` : null);
+/** Bill no., amount, vehicle, date, notes and photos only – quantities stay "delete & reverse" because stock depends on them. */
+function GRNEditModal({ g, onClose, onSaved }: { g: any; onClose: () => void; onSaved: () => void }) {
+  const toast = useToast();
+  // mounted only while open, so the fields start from the GRN as it is now
+  const [invoiceNo, setInvoiceNo] = useState<string>(g.vendorInvoiceNo ?? "");
+  const [amount, setAmount] = useState<number | "">(g.vendorInvoiceAmount ?? "");
+  const [vehicle, setVehicle] = useState<string>(g.vehicleNo ?? "");
+  const [receivedAt, setReceivedAt] = useState(() => toInputDateTime(g.receivedAt));
+  const [notes, setNotes] = useState<string>(g.notes ?? "");
+  const [photos, setPhotos] = useState<any[]>(g.photos ?? []);
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.patch(`/grn/${g.id}`, {
+        vendorInvoiceNo: invoiceNo,
+        vendorInvoiceAmount: amount === "" ? null : amount,
+        vehicleNo: vehicle,
+        receivedAt: receivedAt ? new Date(receivedAt).toISOString() : undefined,
+        notes,
+        photos: photos.map((p: any) => p.id ?? p),
+      });
+      toast.success("GRN details saved");
+      invalidate("/grn", "/purchase-orders", "/inventory");
+      onSaved();
+      onClose();
+    } catch (e) {
+      toast.error(e);
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
-    <Drawer open={!!id} onClose={onClose} width="max-w-3xl" title={g ? `${g.grnNo} – ${g.vendor?.name ?? ""}` : "Goods receipt"} subtitle={g && <span>Received {dateTime(g.receivedAt)} by {g.receivedBy?.name}</span>}>
+    <Modal open onClose={onClose} size="lg" title={`Edit ${g.grnNo ?? "GRN"}`} footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={saving} onClick={save}>Save changes</Button></>}>
+      <p className="mb-3 text-sm text-muted">Quantities can&apos;t be edited here because stock and the PO depend on them. If a quantity is wrong, delete this GRN (stock is reversed) and receive the goods again.</p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div><label className="label">Vendor bill no.</label><input className="input" value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} /></div>
+        <div><label className="label">Bill amount</label><input type="number" min={0} step="any" className="input" value={amount} onChange={(e) => setAmount(e.target.value === "" ? "" : Number(e.target.value))} /></div>
+        <div><label className="label">Vehicle no.</label><input className="input" value={vehicle} onChange={(e) => setVehicle(e.target.value)} /></div>
+        <div><label className="label">Received on</label><input type="datetime-local" className="input" value={receivedAt} onChange={(e) => setReceivedAt(e.target.value)} /></div>
+        <div className="sm:col-span-2"><label className="label">Notes</label><textarea className="input" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
+        <div className="sm:col-span-2"><label className="label">Delivery challan / bill / material photos</label><Attachments files={photos} onChange={(ids) => setPhotos((prev) => ids.map((x) => prev.find((p: any) => (p.id ?? p) === x) ?? x))} meta={{ category: "invoice", project: g.project?.id, entityType: "GRN", entityId: g.id }} /></div>
+      </div>
+    </Modal>
+  );
+}
+
+function GRNDetail({ id, onClose }: { id: string | null; onClose: () => void }) {
+  const { can } = useAuth();
+  const { data: g, mutate } = useOne<any>(id ? `/grn/${id}` : null);
+  const [editing, setEditing] = useState(false);
+  return (
+    <Drawer
+      open={!!id}
+      onClose={onClose}
+      width="max-w-3xl"
+      title={g ? `${g.grnNo} – ${g.vendor?.name ?? ""}` : "Goods receipt"}
+      subtitle={g && <span>Received {dateTime(g.receivedAt)} by {g.receivedBy?.name}</span>}
+      footer={
+        g && can("grn:write") && (
+          <>
+            <Button variant="secondary" onClick={onClose}>Close</Button>
+            <Button icon={<Pencil className="size-4" />} onClick={() => setEditing(true)}>Edit details</Button>
+          </>
+        )
+      }
+    >
+      {g && editing && <GRNEditModal g={g} onClose={() => setEditing(false)} onSaved={() => mutate()} />}
       {!g ? <Loading /> : (
         <div className="space-y-5">
           <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -697,9 +827,10 @@ function Ledger() {
   return (
     <div className="card">
       <div className="flex flex-wrap gap-2 border-b border-line p-3">
-        <EntitySelect className="w-64" value={material} onChange={setMaterial} config={REF.material} placeholder="All materials" />
-        <EntitySelect className="w-64" value={project} onChange={setProject} config={REF.project} placeholder="All sites" />
-        <select className="input w-auto" value={type} onChange={(e) => setType(e.target.value)}><option value="">All movements</option>{STOCK_TXN_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}</select>
+        {/* a new filter starts again from page 1 – page 7 of a shorter list would look empty */}
+        <EntitySelect className="w-64" value={material} onChange={(v) => (setMaterial(v), setPage(1))} config={REF.material} placeholder="All materials" />
+        <EntitySelect className="w-64" value={project} onChange={(v) => (setProject(v), setPage(1))} config={REF.project} placeholder="All sites" />
+        <select className="input w-auto" value={type} onChange={(e) => (setType(e.target.value), setPage(1))}><option value="">All movements</option>{STOCK_TXN_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}</select>
       </div>
       <DataTable
         loading={loading}
@@ -751,7 +882,10 @@ function AdjustModal({ open, onClose }: { open: boolean; onClose: () => void }) 
   const [qty, setQty] = useState(0);
   const [rate, setRate] = useState(0);
   const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
   const submit = async () => {
+    if (saving) return; // a double tap must not adjust twice
+    setSaving(true);
     try {
       await api.post("/inventory/adjust", { material, qty, rate, notes });
       toast.success("Stock adjusted");
@@ -759,10 +893,12 @@ function AdjustModal({ open, onClose }: { open: boolean; onClose: () => void }) 
       onClose();
     } catch (e) {
       toast.error(e);
+    } finally {
+      setSaving(false);
     }
   };
   return (
-    <Modal open={open} onClose={onClose} title="Stock adjustment" footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button onClick={submit}>Adjust</Button></>}>
+    <Modal open={open} onClose={onClose} title="Stock adjustment" footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={saving} onClick={submit}>Adjust</Button></>}>
       <div className="space-y-3">
         <div><label className="label">Material</label><EntitySelect value={material} onChange={setMaterial} config={REF.material} /></div>
         <div className="grid grid-cols-2 gap-3">

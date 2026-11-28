@@ -1,5 +1,4 @@
 import { Schema } from "mongoose";
-import { DEPARTMENTS, ROLES, values } from "@/lib/constants";
 import { defineModel, makeSchema, ObjectId } from "./_base";
 
 /* ---------------------------------- User --------------------------------- */
@@ -8,9 +7,9 @@ const UserSchema = makeSchema({
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
   phone: { type: String, trim: true, index: true },
   passwordHash: { type: String, required: true, select: false },
-  role: { type: String, enum: values(ROLES), default: "staff", index: true },
+  role: { type: String, default: "staff", index: true },
   designation: { type: String, trim: true },
-  department: { type: String, enum: values(DEPARTMENTS) },
+  department: { type: String },
   extraPermissions: { type: [String], default: [] },
   avatar: { type: ObjectId, ref: "File" },
   isActive: { type: Boolean, default: true, index: true },

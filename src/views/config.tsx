@@ -133,30 +133,71 @@ export const vendorColumns: Column[] = [
 /* ------------------------------- Contractors ----------------------------- */
 export const contractorFields: Field[] = [
   { name: "name", label: "Name / firm", required: true },
-  { name: "trade", label: "Trade", type: "select", options: TRADES, required: true },
+  { name: "trade", label: "Main trade", type: "select", options: TRADES, required: true, help: "What they mostly do. Other work goes in the rate card below." },
   { name: "phone", label: "Phone", type: "tel" },
   { name: "alternatePhone", label: "Alternate phone", type: "tel" },
   { name: "address", label: "Address", type: "textarea", rows: 2 },
   { name: "teamSize", label: "Team size", type: "number" },
-  { name: "rateType", label: "Rate type", type: "select", options: RATE_TYPES },
-  { name: "rate", label: "Rate", type: "money" },
-  { name: "idProof", label: "ID proof (Aadhaar / PAN no.)" },
   { name: "rating", label: "Rating (0-5)", type: "number", min: 0, max: 5 },
+  { name: "s1", label: "Rate card", type: "section" },
+  {
+    name: "rates",
+    label: "Rates",
+    type: "rows",
+    addLabel: "Add rate",
+    help: "One contractor can charge differently per work, e.g. Painting ₹18 per sq.ft, Carpentry ₹900 per day.",
+    columns: [
+      { name: "trade", label: "Work type", type: "select", options: TRADES, required: true },
+      { name: "work", label: "Details (optional)", placeholder: "e.g. Putty + 2 coats" },
+      { name: "rateType", label: "Rate type", type: "select", options: RATE_TYPES },
+      { name: "rate", label: "Rate", type: "money" },
+    ],
+    // older contractors only have a single rate – show it as the first line
+    load: (r) => (r.rates?.length ? r.rates : r.rate || r.rateType ? [{ trade: r.trade, rateType: r.rateType, rate: r.rate }] : []),
+  },
+  { name: "s2", label: "Other details", type: "section" },
+  { name: "idProof", label: "ID proof (Aadhaar / PAN no.)" },
+  { name: "bank.accountName", label: "Bank account name" },
+  { name: "bank.accountNo", label: "Account number" },
+  { name: "bank.bankName", label: "Bank name" },
+  { name: "bank.ifsc", label: "IFSC" },
+  { name: "bank.upi", label: "UPI ID" },
   { name: "isActive", label: "Active", type: "checkbox", placeholder: "Active" },
   { name: "notes", label: "Notes", type: "textarea" },
 ];
+
+/** "Painting ₹18 per sq.ft · Carpentry ₹900 per day" */
+export function rateCard(r: any, max = 3) {
+  const lines: any[] = r?.rates?.length ? r.rates : r?.rate ? [{ trade: r.trade, rateType: r.rateType, rate: r.rate }] : [];
+  const text = lines
+    .slice(0, max)
+    .map((l) => [labelOf(TRADES, l.trade), l.work, l.rate ? `${money(l.rate)}${l.rateType ? ` ${labelOf(RATE_TYPES, l.rateType).toLowerCase()}` : ""}` : ""].filter(Boolean).join(" "));
+  return text.join(" · ") + (lines.length > max ? ` · +${lines.length - max} more` : "");
+}
+
 export const contractorColumns: Column[] = [
   { key: "name", label: "Contractor", render: (r) => <span><span className="font-medium">{r.name}</span><span className="block text-xs text-muted">{r.contractorNo}</span></span> },
-  { key: "trade", label: "Trade", render: (r) => <Badge color="brand">{labelOf(TRADES, r.trade)}</Badge> },
+  {
+    key: "trade",
+    label: "Trades",
+    csv: (r) => [...new Set([r.trade, ...(r.rates ?? []).map((x: any) => x.trade)])].map((t) => labelOf(TRADES, t)).join(", "),
+    render: (r) => (
+      <div className="flex flex-wrap gap-1">
+        {[...new Set([r.trade, ...(r.rates ?? []).map((x: any) => x.trade)])].filter(Boolean).slice(0, 4).map((t: string, i) => (
+          <Badge key={t} color={i === 0 ? "brand" : "gray"}>{labelOf(TRADES, t)}</Badge>
+        ))}
+      </div>
+    ),
+  },
   { key: "phone", label: "Phone" },
-  { key: "teamSize", label: "Team", align: "right" },
-  { key: "rate", label: "Rate", render: (r) => (r.rate ? `${money(r.rate)} ${labelOf(RATE_TYPES, r.rateType).toLowerCase()}` : "—"), hideOnMobile: true },
+  { key: "teamSize", label: "Team", align: "right", hideOnMobile: true },
+  { key: "rate", label: "Rates", csv: (r) => rateCard(r, 50), render: (r) => <span className="line-clamp-2 max-w-sm text-xs text-stone-600">{rateCard(r) || "—"}</span>, hideOnMobile: true },
   { key: "isActive", label: "", render: (r) => (r.isActive === false ? <Badge color="red">Inactive</Badge> : null) },
 ];
 
 /* ------------------------------- Work orders ----------------------------- */
 export const workOrderFields: Field[] = [
-  { name: "project", label: "Site", type: "ref", ref: REF.project, required: true },
+  { name: "project", label: "Site", type: "ref", ref: REF.project, required: true, disabled: (v) => !!v.id, help: "Site can't be changed after creation" },
   { name: "contractor", label: "Contractor", type: "ref", ref: REF.contractor, required: true },
   { name: "trade", label: "Trade", type: "select", options: TRADES },
   { name: "amount", label: "Agreed amount", type: "money" },
@@ -165,6 +206,7 @@ export const workOrderFields: Field[] = [
   { name: "status", label: "Status", type: "select", options: WORK_ORDER_STATUS },
   { name: "scope", label: "Scope of work", type: "textarea", rows: 4 },
   { name: "terms", label: "Terms", type: "textarea" },
+  { name: "notes", label: "Notes", type: "textarea", rows: 2 },
 ];
 export const workOrderColumns: Column[] = [
   { key: "woNo", label: "WO #", render: (r) => <span className="font-medium">{r.woNo}</span> },
@@ -190,6 +232,7 @@ export const materialFields: Field[] = [
   { name: "preferredVendor", label: "Preferred vendor", type: "ref", ref: REF.vendor },
   { name: "openingStock", label: "Opening stock", type: "number", hidden: (v) => !!v.id, help: "Only when creating" },
   { name: "specification", label: "Specification", type: "textarea", rows: 2 },
+  { name: "notes", label: "Notes", type: "textarea", rows: 2 },
   { name: "isActive", label: "Active", type: "checkbox", placeholder: "Active" },
 ];
 
@@ -201,7 +244,7 @@ export const followupFields: Field[] = [
   { name: "assignedTo", label: "Assigned to", type: "ref", ref: REF.user },
   { name: "purpose", label: "Purpose", type: "textarea", rows: 2 },
   { name: "status", label: "Status", type: "select", options: FOLLOWUP_STATUS },
-  { name: "outcome", label: "Outcome / discussion", type: "textarea", hidden: (v) => v.status !== "done" && v.status !== "missed" },
+  { name: "outcome", label: "Outcome / discussion", type: "textarea", hidden: (v) => !["done", "missed", "cancelled"].includes(v.status) },
   { name: "nextFollowUpAt", label: "Schedule next follow-up", type: "datetime", hidden: (v) => v.status !== "done" },
 ];
 export const followupColumns: Column[] = [
@@ -215,7 +258,7 @@ export const followupColumns: Column[] = [
 
 /* ------------------------------ Finance: receipts ------------------------ */
 export const paymentFields: Field[] = [
-  { name: "project", label: "Site", type: "ref", ref: REF.project, required: true },
+  { name: "project", label: "Site", type: "ref", ref: REF.project, required: true, disabled: (v) => !!v.id, help: "Site can't be changed after creation" },
   { name: "amount", label: "Amount received", type: "money", required: true },
   { name: "date", label: "Date", type: "date" },
   { name: "type", label: "Against", type: "select", options: RECEIPT_TYPES },

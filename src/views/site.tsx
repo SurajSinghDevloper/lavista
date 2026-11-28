@@ -1,10 +1,10 @@
 "use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { AlertTriangle, ClipboardCheck, Copy, Plus, Trash2, Users } from "lucide-react";
+import { AlertTriangle, ClipboardCheck, Copy, Pencil, Plus, Trash2, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth";
-import { ResourcePage } from "@/components/data-table";
+import { Pagination, ResourcePage } from "@/components/data-table";
 import { Attachments, FileGrid, ProjectLink, REF } from "@/components/domain";
 import { EntitySelect, FormGrid, errorsFrom, toPayload, useFormState, type Field } from "@/components/form";
 import { Badge, Button, Card, Drawer, Empty, Loading, Modal, PageHeader, Progress, Segmented, StatusBadge, cx, useConfirm, useToast } from "@/components/ui";
@@ -75,7 +75,7 @@ function DailyReportDrawer({ open, onClose, record, project, onSaved }: { open: 
     }
   };
   return (
-    <Drawer open={open} onClose={onClose} width="max-w-3xl" title={record ? "Edit daily report" : "Daily site report"} footer={<>{record?.id && can("daily_reports:delete") && <Button variant="ghost" className="mr-auto text-red-600" icon={<Trash2 className="size-4" />} onClick={remove}>Delete</Button>}<Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={saving} onClick={save}>Submit report</Button></>}>
+    <Drawer open={open} onClose={onClose} width="max-w-3xl" title={record ? "Edit daily report" : "Daily site report"} footer={<>{record?.id && can("daily_reports:delete") && <Button variant="ghost" className="mr-auto text-red-600" icon={<Trash2 className="size-4" />} onClick={remove}>Delete</Button>}<Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={saving} onClick={save}>{record?.id ? "Save changes" : "Submit report"}</Button></>}>
       <div className="space-y-5">
         {!project && !record && (
           <div>
@@ -112,7 +112,8 @@ function DailyReportDrawer({ open, onClose, record, project, onSaved }: { open: 
 export function DailyReportsView({ project }: { project?: string }) {
   const { can } = useAuth();
   const [filterProject, setFilterProject] = useState<string | null>(null);
-  const { rows, loading, mutate } = useList("/daily-reports", { project: project ?? filterProject ?? undefined, limit: 50, sort: "-date" });
+  const [page, setPage] = useState(1);
+  const { rows, meta, loading, mutate } = useList("/daily-reports", { project: project ?? filterProject ?? undefined, page, limit: 20, sort: "-date" });
   const [drawer, setDrawer] = useState<any>(false);
   return (
     <div>
@@ -122,7 +123,7 @@ export function DailyReportsView({ project }: { project?: string }) {
           subtitle="Supervisor updates: work done, manpower, issues & photos"
           actions={
             <>
-              <EntitySelect className="w-64" value={filterProject} onChange={setFilterProject} config={REF.project} placeholder="All sites" />
+              <EntitySelect className="w-64" value={filterProject} onChange={(v) => (setFilterProject(v), setPage(1))} config={REF.project} placeholder="All sites" />
               {can("daily_reports:write") && <Button icon={<Plus className="size-4" />} onClick={() => setDrawer(null)}>New report</Button>}
             </>
           }
@@ -168,6 +169,7 @@ export function DailyReportsView({ project }: { project?: string }) {
               {r.photos?.length > 0 && <div className="mt-3"><FileGrid files={r.photos} /></div>}
             </Card>
           ))}
+          {meta && meta.pages > 1 && <div className="card"><Pagination page={meta.page} pages={meta.pages} total={meta.total} onPage={setPage} /></div>}
         </div>
       )}
       <DailyReportDrawer open={drawer !== false} onClose={() => setDrawer(false)} record={drawer || undefined} project={project} onSaved={mutate} />
@@ -176,21 +178,76 @@ export function DailyReportsView({ project }: { project?: string }) {
 }
 
 /* -------------------------------- Checklists ----------------------------- */
+function ChecklistHeaderModal({ c, onClose, onSaved }: { c: any; onClose: () => void; onSaved: () => void }) {
+  const toast = useToast();
+  // mounted only while open, so the fields start from the checklist as it is now
+  const [name, setName] = useState<string>(c.name ?? "");
+  const [trade, setTrade] = useState<string>(c.trade ?? "");
+  const [assignedTo, setAssignedTo] = useState<any>(c.assignedTo ?? null);
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (!name.trim()) return toast.error("Checklist name is required");
+    setSaving(true);
+    try {
+      await api.patch(`/checklists/${c.id}`, { name: name.trim(), trade, assignedTo: assignedTo?.id ?? assignedTo ?? null });
+      toast.success("Checklist updated");
+      onSaved();
+      onClose();
+    } catch (e) {
+      toast.error(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Modal open onClose={onClose} title="Edit checklist" footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={saving} onClick={save}>Save changes</Button></>}>
+      <div className="space-y-3">
+        <div><label className="label">Name *</label><input className="input" value={name} onChange={(e) => setName(e.target.value)} /></div>
+        <div>
+          <label className="label">Trade</label>
+          <select className="input" value={trade} onChange={(e) => setTrade(e.target.value)}>
+            <option value="">General</option>
+            {TRADES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+          </select>
+        </div>
+        <div><label className="label">Responsible person</label><EntitySelect value={assignedTo} onChange={setAssignedTo} config={REF.user} /></div>
+      </div>
+    </Modal>
+  );
+}
+
 function ChecklistCard({ c, reload }: { c: any; reload: () => void }) {
   const toast = useToast();
   const confirm = useConfirm();
   const { can } = useAuth();
   const [items, setItems] = useState<any[]>(c.items);
   const [newItem, setNewItem] = useState("");
+  const [editHeader, setEditHeader] = useState(false);
+  const [editItem, setEditItem] = useState<{ id: string; text: string; remark: string } | null>(null);
   useEffect(() => setItems(c.items), [c.items]);
+  const saveItem = async () => {
+    if (!editItem) return;
+    if (!editItem.text.trim()) return toast.error("The check can't be empty");
+    try {
+      await api.patch(`/checklists/${c.id}/items/${editItem.id}`, { text: editItem.text.trim(), remark: editItem.remark });
+      setEditItem(null);
+      reload();
+    } catch (e) {
+      toast.error(e);
+    }
+  };
+  const [adding, setAdding] = useState(false);
   const addItem = async () => {
-    if (!newItem.trim()) return;
+    if (!newItem.trim() || adding) return; // Enter + click must not add the same check twice
+    setAdding(true);
     try {
       await api.post(`/checklists/${c.id}/items`, { text: newItem.trim() });
       setNewItem("");
       reload();
     } catch (e) {
       toast.error(e);
+    } finally {
+      setAdding(false);
     }
   };
   const removeItem = async (it: any) => {
@@ -223,10 +280,19 @@ function ChecklistCard({ c, reload }: { c: any; reload: () => void }) {
         </span>
       }
       action={
-        can("checklists:delete") && (
-          <button className="text-stone-400 hover:text-red-600" onClick={async () => (await confirm({ title: "Delete checklist?", danger: true, confirmText: "Delete" })) && api.del(`/checklists/${c.id}`).then(reload)}>
-            <Trash2 className="size-4" />
-          </button>
+        (can("checklists:write") || can("checklists:delete")) && (
+          <span className="flex items-center gap-2">
+            {can("checklists:write") && (
+              <button className="text-stone-400 hover:text-ink" title="Edit name, trade or responsible person" onClick={() => setEditHeader(true)}>
+                <Pencil className="size-4" />
+              </button>
+            )}
+            {can("checklists:delete") && (
+              <button className="text-stone-400 hover:text-red-600" title="Delete checklist" onClick={async () => (await confirm({ title: "Delete checklist?", danger: true, confirmText: "Delete" })) && api.del(`/checklists/${c.id}`).then(reload).catch(toast.error)}>
+                <Trash2 className="size-4" />
+              </button>
+            )}
+          </span>
         )
       }
     >
@@ -235,30 +301,48 @@ function ChecklistCard({ c, reload }: { c: any; reload: () => void }) {
         <span className="text-xs tabular-nums text-muted">{done}/{items.length}</span>
       </div>
       <ul className="space-y-0.5">
-        {items.map((it) => (
-          <li key={it.id}>
-            <label className="group flex cursor-pointer items-start gap-2.5 rounded-lg px-2 py-1.5 hover:bg-stone-50">
-              <input type="checkbox" className="mt-0.5 size-4 accent-emerald-600" checked={!!it.checked} disabled={!can("checklists:write")} onChange={() => toggle(it)} />
-              <span className="flex-1">
-                <span className={cx("text-sm", it.checked && "text-stone-400 line-through")}>{it.text}</span>
-                {it.checked && it.checkedBy && <span className="block text-[10px] text-muted">✓ {it.checkedBy.name ?? ""} · {dateTime(it.checkedAt)}</span>}
-              </span>
-              {can("checklists:write") && !it.checked && (
-                <button type="button" className="text-stone-300 opacity-0 transition group-hover:opacity-100 hover:text-red-600" title="Remove check" onClick={(e) => (e.preventDefault(), removeItem(it))}>
-                  <Trash2 className="size-3.5" />
-                </button>
-              )}
-            </label>
-          </li>
-        ))}
+        {items.map((it) =>
+          editItem && editItem.id === it.id ? (
+            <li key={it.id} className="space-y-1.5 rounded-lg border border-brand-200 bg-brand-50/40 p-2">
+              <input className="input py-1.5" autoFocus value={editItem.text} onChange={(e) => setEditItem((x) => x && { ...x, text: e.target.value })} onKeyDown={(e) => e.key === "Enter" && saveItem()} />
+              <input className="input py-1.5 text-xs" placeholder="Remark (optional) – e.g. what was found, what was fixed" value={editItem.remark} onChange={(e) => setEditItem((x) => x && { ...x, remark: e.target.value })} onKeyDown={(e) => e.key === "Enter" && saveItem()} />
+              <div className="flex justify-end gap-1">
+                <Button size="xs" variant="secondary" onClick={() => setEditItem(null)}>Cancel</Button>
+                <Button size="xs" onClick={saveItem}>Save</Button>
+              </div>
+            </li>
+          ) : (
+            <li key={it.id}>
+              <label className="group flex cursor-pointer items-start gap-2.5 rounded-lg px-2 py-1.5 hover:bg-stone-50">
+                <input type="checkbox" className="mt-0.5 size-4 accent-emerald-600" checked={!!it.checked} disabled={!can("checklists:write")} onChange={() => toggle(it)} />
+                <span className="flex-1">
+                  <span className={cx("text-sm", it.checked && "text-stone-400 line-through")}>{it.text}</span>
+                  {it.remark && <span className="block text-xs text-stone-500">{it.remark}</span>}
+                  {it.checked && it.checkedBy && <span className="block text-[10px] text-muted">✓ {it.checkedBy.name ?? ""} · {dateTime(it.checkedAt)}</span>}
+                </span>
+                {can("checklists:write") && (
+                  <button type="button" className="text-stone-300 transition hover:text-ink sm:opacity-0 sm:group-hover:opacity-100" title="Edit text / remark" onClick={(e) => (e.preventDefault(), setEditItem({ id: it.id, text: it.text ?? "", remark: it.remark ?? "" }))}>
+                    <Pencil className="size-3.5" />
+                  </button>
+                )}
+                {can("checklists:write") && !it.checked && (
+                  <button type="button" className="text-stone-300 opacity-0 transition group-hover:opacity-100 hover:text-red-600" title="Remove check" onClick={(e) => (e.preventDefault(), removeItem(it))}>
+                    <Trash2 className="size-3.5" />
+                  </button>
+                )}
+              </label>
+            </li>
+          )
+        )}
       </ul>
       {can("checklists:write") && (
         <div className="mt-2 flex gap-2">
           <input className="input py-1.5" placeholder="Add a site-specific check…" value={newItem} onChange={(e) => setNewItem(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addItem()} />
-          <Button size="sm" variant="secondary" icon={<Plus className="size-3.5" />} onClick={addItem}>Add</Button>
+          <Button size="sm" variant="secondary" icon={<Plus className="size-3.5" />} loading={adding} onClick={addItem}>Add</Button>
         </div>
       )}
       {c.assignedTo && <p className="mt-2 text-xs text-muted">Responsible: {c.assignedTo.name}</p>}
+      {editHeader && <ChecklistHeaderModal c={c} onClose={() => setEditHeader(false)} onSaved={reload} />}
     </Card>
   );
 }
@@ -274,8 +358,11 @@ function TemplateEditor({ open, onClose, record, onSaved }: { open: boolean; onC
     setTrade(record?.trade ?? "");
     setText((record?.items ?? []).map((i: any) => i.text).join("\n"));
   }, [open, record]);
+  const [saving, setSaving] = useState(false);
   const save = async () => {
+    if (saving) return; // a double tap would create the template twice
     const items = text.split("\n").map((t) => t.trim()).filter(Boolean).map((t) => ({ text: t }));
+    setSaving(true);
     try {
       if (record?.id) await api.patch(`/checklists/${record.id}`, { name, trade, items });
       else await api.post("/checklists", { name, trade, items, isTemplate: true });
@@ -284,10 +371,12 @@ function TemplateEditor({ open, onClose, record, onSaved }: { open: boolean; onC
       onClose();
     } catch (e) {
       toast.error(e);
+    } finally {
+      setSaving(false);
     }
   };
   return (
-    <Modal open={open} onClose={onClose} title={record ? "Edit template" : "New checklist template"} footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button onClick={save}>Save</Button></>}>
+    <Modal open={open} onClose={onClose} title={record ? "Edit template" : "New checklist template"} footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={saving} onClick={save}>Save</Button></>}>
       <div className="space-y-3">
         <div><label className="label">Name</label><input className="input" value={name} onChange={(e) => setName(e.target.value)} /></div>
         <div>
@@ -316,8 +405,11 @@ export function ChecklistsView({ project }: { project?: string }) {
   const [applyProject, setApplyProject] = useState<string | null>(project ?? null);
   const [assignee, setAssignee] = useState<string | null>(null);
   const [editTpl, setEditTpl] = useState<any>(false);
+  const [applying, setApplying] = useState(false);
   const doApply = async () => {
     if (!tpl || !applyProject) return toast.error("Select template and site");
+    if (applying) return; // a double tap would add the checklist twice
+    setApplying(true);
     try {
       await api.post(`/checklists/${tpl}/apply`, { project: applyProject, assignedTo: assignee });
       toast.success("Checklist added to site");
@@ -325,6 +417,8 @@ export function ChecklistsView({ project }: { project?: string }) {
       site.mutate();
     } catch (e) {
       toast.error(e);
+    } finally {
+      setApplying(false);
     }
   };
   return (
@@ -368,7 +462,7 @@ export function ChecklistsView({ project }: { project?: string }) {
           ))}
         </div>
       )}
-      <Modal open={apply} onClose={() => setApply(false)} title="Add checklist to site" footer={<><Button variant="secondary" onClick={() => setApply(false)}>Cancel</Button><Button onClick={doApply}>Add</Button></>}>
+      <Modal open={apply} onClose={() => setApply(false)} title="Add checklist to site" footer={<><Button variant="secondary" onClick={() => setApply(false)}>Cancel</Button><Button loading={applying} onClick={doApply}>Add</Button></>}>
         <div className="space-y-3">
           <div>
             <label className="label">Template</label>

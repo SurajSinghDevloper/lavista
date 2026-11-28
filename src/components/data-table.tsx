@@ -1,7 +1,7 @@
 "use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { ChevronLeft, ChevronRight, Download, MoreHorizontal, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, Eye, MoreHorizontal, Pencil, Plus, Search, SquareArrowOutUpRight, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "@/components/auth";
@@ -9,8 +9,8 @@ import { invalidate, useList, type Row } from "@/hooks/use-api";
 import { api, qs } from "@/lib/api-client";
 import type { Option } from "@/lib/constants";
 import type { Resource } from "@/lib/permissions";
-import { EntitySelect, FormDrawer, type Field, type RefConfig } from "./form";
-import { Button, cx, Empty, IconButton, LoadError, Menu, MenuItem, PageHeader, Skeleton, useConfirm, useToast } from "./ui";
+import { EntitySelect, FormDrawer, FormGrid, toFormValues, type Field, type RefConfig } from "./form";
+import { Button, cx, Drawer, Empty, IconButton, LoadError, Menu, MenuItem, Modal, PageHeader, Skeleton, useConfirm, useToast } from "./ui";
 
 export type Column<T = Row> = {
   key: string;
@@ -252,6 +252,7 @@ export function ResourcePage(p: ResourcePageProps) {
   const [page, setPage] = useState(1);
   const [filterValues, setFilterValues] = useState<Record<string, any>>({});
   const [editing, setEditing] = useState<Row | null>(null);
+  const [viewing, setViewing] = useState<Row | null>(null); // read-only view for people without write access
   const [creating, setCreating] = useState(false);
 
   const params = { q, page, limit: p.limit ?? 20, sort: p.sort, ...p.baseParams, ...filterValues };
@@ -269,7 +270,7 @@ export function ResourcePage(p: ResourcePageProps) {
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search);
     const id = sp.get("open");
-    if (id && p.fields) api.get<Row>(`${p.endpoint}/${id}`).then(setEditing).catch(() => undefined);
+    if (id && p.fields) api.get<Row>(`${p.endpoint}/${id}`).then(canWrite ? setEditing : setViewing).catch(() => undefined);
     const init: Record<string, string> = {};
     for (const f of p.filters ?? []) if (sp.get(f.name)) init[f.name] = sp.get(f.name)!;
     if (Object.keys(init).length) setFilterValues(init);
@@ -283,6 +284,17 @@ export function ResourcePage(p: ResourcePageProps) {
       toast.error(e);
     }
   };
+  const openView = async (row: Row) => {
+    try {
+      setViewing(await api.get<Row>(`${p.endpoint}/${row.id}`));
+    } catch (e) {
+      toast.error(e);
+    }
+  };
+  const closeView = () => {
+    setViewing(null);
+    if (new URLSearchParams(window.location.search).has("open")) window.history.replaceState(null, "", window.location.pathname);
+  };
 
   const remove = async (row: Row) => {
     if (!(await confirm({ title: `Delete this ${name}?`, message: "This cannot be undone.", confirmText: "Delete", danger: true }))) return;
@@ -295,10 +307,11 @@ export function ResourcePage(p: ResourcePageProps) {
     }
   };
 
-  const click = p.onRowClick ?? (p.rowHref ? (r: Row) => router.push(p.rowHref!(r)) : p.fields && canWrite ? openEdit : undefined);
+  // no write access → the row still opens, read-only, so people can at least see the record
+  const click = p.onRowClick ?? (p.rowHref ? (r: Row) => router.push(p.rowHref!(r)) : p.fields ? (canWrite ? openEdit : openView) : undefined);
 
   const actions =
-    p.rowMenu || (p.fields && canWrite) || canDelete
+    p.rowMenu || p.rowHref || p.fields || canDelete
       ? (row: Row) => (
           <Menu
             trigger={
@@ -307,9 +320,19 @@ export function ResourcePage(p: ResourcePageProps) {
               </IconButton>
             }
           >
+            {p.rowHref && (
+              <MenuItem icon={p.fields || !canWrite ? <SquareArrowOutUpRight className="size-4" /> : <Pencil className="size-4" />} href={p.rowHref(row)}>
+                {p.fields || !canWrite ? "Open" : "Open / Edit"}
+              </MenuItem>
+            )}
             {p.fields && canWrite && (
               <MenuItem icon={<Pencil className="size-4" />} onClick={() => openEdit(row)}>
                 Edit
+              </MenuItem>
+            )}
+            {p.fields && !canWrite && !p.rowHref && (
+              <MenuItem icon={<Eye className="size-4" />} onClick={() => openView(row)}>
+                View details
               </MenuItem>
             )}
             {p.rowMenu?.(row, reload)}
@@ -394,6 +417,34 @@ export function ResourcePage(p: ResourcePageProps) {
           modal={p.formModal}
         />
       )}
+      {p.fields && <ReadOnlyRecord open={!!viewing} onClose={closeView} title={`${name.charAt(0).toUpperCase()}${name.slice(1)} details`} fields={p.fields} record={viewing} modal={p.formModal} />}
     </div>
+  );
+}
+
+/** The edit form with every input switched off and no Save button – for people who may only look. */
+function ReadOnlyRecord({ open, onClose, title, fields, record, modal }: { open: boolean; onClose: () => void; title: string; fields: Field[]; record: Row | null; modal?: boolean }) {
+  const body = (
+    <>
+      <p className="mb-3 rounded-lg bg-stone-50 px-3 py-2 text-xs text-muted">View only – your role can&apos;t change this record.</p>
+      {/* a disabled fieldset switches off every input, select and picker inside it */}
+      <fieldset disabled className="min-w-0">
+        <FormGrid fields={fields} values={toFormValues(fields, record)} setValue={() => undefined} />
+      </fieldset>
+    </>
+  );
+  const footer = (
+    <Button variant="secondary" onClick={onClose}>
+      Close
+    </Button>
+  );
+  return modal ? (
+    <Modal open={open} onClose={onClose} title={title} footer={footer} size="lg">
+      {body}
+    </Modal>
+  ) : (
+    <Drawer open={open} onClose={onClose} title={title} footer={footer}>
+      {body}
+    </Drawer>
   );
 }

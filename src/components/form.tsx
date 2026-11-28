@@ -1,7 +1,7 @@
 "use client";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Check, ChevronDown, Search, X } from "lucide-react";
+import { Check, ChevronDown, Plus, Search, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api, ApiClientError, qs } from "@/lib/api-client";
 import type { Option } from "@/lib/constants";
@@ -30,8 +30,15 @@ export type Field = {
     | "ref"
     | "refs"
     | "password"
+    | "rows"
     | "section";
   options?: readonly Option[];
+  /** For type "rows": the columns of each row (text / number / money / select). */
+  columns?: Field[];
+  /** Label of the "add row" button for type "rows". */
+  addLabel?: string;
+  /** Turn the saved record into the form value (e.g. build rows from older fields). */
+  load?: (row: Record<string, any>) => any;
   ref?: RefConfig;
   required?: boolean;
   placeholder?: string;
@@ -232,6 +239,93 @@ export function MultiSelect({ options, value, onChange }: { options: readonly Op
   );
 }
 
+/* ------------------------------- Rows editor ----------------------------- */
+const isEmptyRow = (r: Record<string, any>, cols: Field[]) => cols.every((c) => isBlank(r?.[c.name]));
+
+/** Small repeatable table, e.g. a contractor's rate card (trade · work · rate type · rate). */
+export function RowsInput({ field, value, onChange, disabled }: { field: Field; value: any[]; onChange: (v: any[]) => void; disabled?: boolean }) {
+  const cols = field.columns ?? [];
+  const rows: Record<string, any>[] = Array.isArray(value) ? value : [];
+  const set = (i: number, patch: Record<string, any>) => onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const cell = (c: Field, r: Record<string, any>, i: number) => {
+    const v = r[c.name];
+    if (c.type === "select")
+      return (
+        <select className="input min-w-32 py-1.5" value={v ?? ""} disabled={disabled} onChange={(e) => set(i, { [c.name]: e.target.value })} aria-label={c.label}>
+          <option value="">{c.placeholder ?? "Select…"}</option>
+          {c.options?.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      );
+    if (c.type === "number" || c.type === "money")
+      return (
+        <div className={c.type === "money" ? "input-group" : undefined}>
+          {c.type === "money" && <span className="input-addon" aria-hidden>₹</span>}
+          <input
+            type="number"
+            inputMode="decimal"
+            step="any"
+            min={c.min ?? 0}
+            className="input min-w-20 py-1.5 text-right tabular-nums"
+            value={v ?? ""}
+            disabled={disabled}
+            aria-label={c.label}
+            onWheel={(e) => (e.target as HTMLInputElement).blur()}
+            onChange={(e) => set(i, { [c.name]: e.target.value === "" ? "" : Number(e.target.value) })}
+          />
+        </div>
+      );
+    return <input className="input min-w-32 py-1.5" value={v ?? ""} placeholder={c.placeholder} disabled={disabled} aria-label={c.label} onChange={(e) => set(i, { [c.name]: e.target.value })} />;
+  };
+  return (
+    <div className="space-y-2">
+      {rows.length > 0 && (
+        <div className="overflow-x-auto rounded-lg border border-line">
+          <table className="w-full min-w-[600px] text-sm">
+            <thead className="bg-stone-50 text-left text-xs text-stone-500">
+              <tr>
+                {cols.map((c) => (
+                  <th key={c.name} className="px-2 py-1.5 font-medium">
+                    {c.label}
+                    {c.required && <span className="text-red-500"> *</span>}
+                  </th>
+                ))}
+                <th className="w-8" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={r.id ?? r._id ?? i} className="border-t border-line align-top">
+                  {cols.map((c) => (
+                    <td key={c.name} className="px-1.5 py-1.5">
+                      {cell(c, r, i)}
+                    </td>
+                  ))}
+                  <td className="px-1 py-1.5 text-right">
+                    {!disabled && (
+                      <button type="button" title="Remove this line" className="rounded p-1.5 text-stone-400 hover:bg-red-50 hover:text-red-600" onClick={() => onChange(rows.filter((_, j) => j !== i))}>
+                        <Trash2 className="size-4" />
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {!disabled && (
+        <Button size="xs" variant="secondary" icon={<Plus className="size-3.5" />} onClick={() => onChange([...rows, {}])}>
+          {field.addLabel ?? "Add line"}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------ Field renderer --------------------------- */
 export function FieldInput({ field, value, onChange, values }: { field: Field; value: any; onChange: (v: any) => void; values: Record<string, any> }) {
   const disabled = typeof field.disabled === "function" ? field.disabled(values) : field.disabled;
@@ -267,19 +361,23 @@ export function FieldInput({ field, value, onChange, values }: { field: Field; v
       return <EntitySelect value={value} onChange={(id) => onChange(id)} config={field.ref!} disabled={disabled} placeholder={field.placeholder ?? "Select…"} />;
     case "refs":
       return <EntityMultiSelect value={value ?? []} onChange={onChange} config={field.ref!} />;
+    case "rows":
+      return <RowsInput field={field} value={value ?? []} onChange={onChange} disabled={disabled} />;
     case "number":
     case "money":
       return (
-        <div className="relative">
-          {field.type === "money" && <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-stone-400">₹</span>}
+        <div className={field.type === "money" ? "input-group" : undefined}>
+          {field.type === "money" && <span className="input-addon" aria-hidden>₹</span>}
           <input
             {...common}
             type="number"
+            inputMode="decimal"
             step="any"
-            min={field.min}
+            min={field.min ?? (field.type === "money" ? 0 : undefined)}
             max={field.max}
-            className={cx("input", field.type === "money" && "pl-7")}
+            className="input"
             value={value ?? ""}
+            onWheel={(e) => (e.target as HTMLInputElement).blur()}
             onChange={(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))}
           />
         </div>
@@ -300,7 +398,7 @@ export function FormGrid({ fields, values, setValue, errors }: { fields: Field[]
               {f.label}
             </h4>
           );
-        const span = f.span === 1 ? "" : f.type === "textarea" || f.type === "multiselect" || f.type === "refs" || f.span === 2 ? "sm:col-span-2" : "";
+        const span = f.span === 1 ? "" : f.type === "textarea" || f.type === "multiselect" || f.type === "refs" || f.type === "rows" || f.span === 2 ? "sm:col-span-2" : "";
         return (
           <div key={f.name} className={span}>
             {f.type !== "checkbox" || f.label ? (
@@ -318,12 +416,16 @@ export function FormGrid({ fields, values, setValue, errors }: { fields: Field[]
   );
 }
 
+/** "bank.ifsc" → row.bank?.ifsc */
+const getPath = (row: Record<string, any> | null | undefined, name: string) =>
+  name.includes(".") ? name.split(".").reduce<any>((o, k) => (o == null ? undefined : o[k]), row) : row?.[name];
+
 /** Convert API record → form values (populated refs → id strings, dates kept). */
 export function toFormValues(fields: Field[], row: Record<string, any> | null | undefined, defaults: Record<string, any> = {}) {
   const v: Record<string, any> = { ...defaults, ...(row?.id ? { id: row.id } : {}) };
   for (const f of fields) {
     if (f.type === "section") continue;
-    const raw = row?.[f.name];
+    const raw = f.load && row ? f.load(row) : getPath(row, f.name);
     if (raw === undefined) continue;
     if (f.type === "ref") v[f.name] = raw && typeof raw === "object" ? raw : raw ?? null;
     else if (f.type === "refs") v[f.name] = (raw ?? []).map((x: any) => (typeof x === "object" ? x : x));
@@ -343,8 +445,28 @@ export function toPayload(fields: Field[], values: Record<string, any>) {
     if (f.type === "refs") v = (v ?? []).map((x: any) => (typeof x === "object" ? x.id : x));
     if ((f.type === "number" || f.type === "money") && v === "") v = null;
     if ((f.type === "date" || f.type === "datetime") && v === "") v = null;
+    if (f.type === "rows") {
+      const cols = f.columns ?? [];
+      v = (v ?? [])
+        .filter((r: any) => r && !isEmptyRow(r, cols))
+        .map((r: any) => {
+          const o: Record<string, any> = r.id ? { id: r.id } : {};
+          for (const c of cols) {
+            let x = r[c.name];
+            if ((c.type === "number" || c.type === "money") && x === "") x = null;
+            if (x !== undefined) o[c.name] = x;
+          }
+          return o;
+        });
+    }
     if (f.type === "datetime" && v) v = new Date(v).toISOString();
-    out[f.name] = v;
+    if (f.name.includes(".")) {
+      // nested field, e.g. bank.ifsc → { bank: { ifsc } }
+      const [head, ...rest] = f.name.split(".");
+      let o = (out[head] ??= {});
+      rest.slice(0, -1).forEach((k) => (o = o[k] ??= {}));
+      o[rest[rest.length - 1]] = v;
+    } else out[f.name] = v;
   }
   return out;
 }
@@ -426,6 +548,20 @@ export function FormDrawer({
     e?.preventDefault();
     // check required fields here so people get "Client is required" next to the field, not a server error
     const missing = fields.filter((f) => f.required && f.type !== "section" && !f.hidden?.(form.values) && isBlank(form.values[f.name]));
+    const badRows = fields
+      .filter((f) => f.type === "rows" && !f.hidden?.(form.values))
+      .flatMap((f) => {
+        const cols = f.columns ?? [];
+        const rows = (form.values[f.name] ?? []).filter((r: any) => r && !isEmptyRow(r, cols));
+        return rows.some((r: any) => cols.some((c) => c.required && isBlank(r[c.name]))) ? [f] : [];
+      });
+    if (!missing.length && badRows.length) {
+      const f = badRows[0];
+      const need = (f.columns ?? []).filter((c) => c.required).map((c) => c.label).join(", ");
+      form.setErrors({ [f.name]: `Each line needs: ${need}` });
+      toast.error(`${f.label}: each line needs ${need}`);
+      return;
+    }
     if (missing.length) {
       form.setErrors(Object.fromEntries(missing.map((f) => [f.name, `${f.label} is required`])));
       toast.error(missing.length === 1 ? `${missing[0].label} is required` : `Please fill in the required fields: ${missing.map((f) => f.label).join(", ")}`);

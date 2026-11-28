@@ -1,10 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Types } from "mongoose";
 import { z } from "zod";
-import { FILE_CATEGORIES, values } from "@/lib/constants";
+import { MANAGED_LISTS, OPTION_VALUE_RE } from "@/lib/options";
 import { can } from "@/lib/permissions";
 import { env } from "../env";
 import { api, ApiError, assertId, badRequest, escapeRegex, forbidden, isObjectId, listParams, notFound, ok, parseBody } from "../http";
+import { zOption } from "../validators";
 import {
   Client,
   Contractor,
@@ -16,10 +17,13 @@ import {
   PurchaseOrder,
   Quotation,
   Task,
+  User,
   Vendor,
   serialize,
 } from "../models";
 import { accessibleProjectIds, assertProjectAccess, audit, projectFilter } from "../services/core";
+import { isManagedList, OptionsError, optionsPayload, resetList, saveList } from "../services/options";
+import { DEFAULT_ROLE_DEFS, getRoles, resetRoles, saveRoles } from "../services/roles";
 import { getAllSettings, SETTING_KEYS, setSetting } from "../services/settings";
 import { ALLOWED_TYPES, createThumbnail, extensionOf, fileStream, INLINE_TYPES, readFileBytes, removeFile, saveFile, sniffOk, THUMBNAIL_EXT } from "../storage";
 
@@ -36,7 +40,7 @@ export const uploadFile = api({ perm: "files:write", rate: { limit: 120, windowS
   if (files.length > 20) throw badRequest("You can upload up to 20 files at a time.");
 
   const category = String(form.get("category") || "other");
-  if (!values(FILE_CATEGORIES).includes(category as never)) throw badRequest("Please choose a valid file category.");
+  if (!OPTION_VALUE_RE.test(category)) throw badRequest("Please choose a valid file category.");
   const project = form.get("project") ? String(form.get("project")) : null;
   if (project) {
     if (!isObjectId(project)) throw badRequest("The selected site is not valid. Please refresh the page and try again.");
@@ -141,9 +145,11 @@ export const downloadFile = api({ perm: "files:read", rate: { limit: 3000, windo
     "X-Content-Type-Options": "nosniff",
   };
   // Images/video get a locked-down sandbox. PDFs don't: a sandboxed document blocks the browser's PDF viewer.
-  if (mime !== "application/pdf") {
-    headers["Content-Security-Policy"] = "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox";
-  }
+  // Either way only this app may show the file inside a frame (the in-app preview).
+  headers["Content-Security-Policy"] =
+    mime === "application/pdf"
+      ? "frame-ancestors 'self'"
+      : "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'self'";
   return new Response(stream, { headers });
 });
 
@@ -151,7 +157,7 @@ export const fileMeta = api({ perm: "files:read" }, async ({ params, user }) => 
 
 export const updateFile = api({ perm: "files:write" }, async ({ req, params, user }) => {
   const f = await loadFileFor(user, assertId(params.id));
-  const body = await parseBody(req, z.object({ caption: z.string().max(300).optional(), category: z.enum(values(FILE_CATEGORIES)).optional() }));
+  const body = await parseBody(req, z.object({ caption: z.string().max(300).optional(), category: zOption.optional() }));
   await FileModel.updateOne({ _id: f._id }, { $set: body });
   return serialize(await FileModel.findById(f._id).lean());
 });
@@ -222,6 +228,102 @@ export const putSetting = api({ perm: "settings:write" }, async ({ req, params, 
   await setSetting(key, value, user.id);
   await audit(user, "update", "Setting", null, `Updated setting ${key}`, { ip });
   return { key, value };
+});
+
+/* --------------------------- Dropdown options ---------------------------- */
+/** All client-managed dropdown lists + role names (any logged-in user – every form needs them). */
+export const getOptions = api({}, async () => optionsPayload());
+
+const optionItems = z.object({
+  items: z
+    .array(z.object({ value: z.string().trim().max(60), label: z.string().trim().min(1, "Every option needs a name").max(80), color: z.string().max(20).optional() }))
+    .min(1, "Keep at least one option in the list.")
+    .max(300),
+});
+
+export const putOptionList = api({ perm: "settings:write" }, async ({ req, params, user, ip }) => {
+  const key = String(params.list);
+  if (!isManagedList(key)) throw notFound("This list does not exist.");
+  const { items } = await parseBody(req, optionItems);
+  try {
+    await saveList(key, items, user.id);
+  } catch (e) {
+    if (e instanceof OptionsError) throw badRequest(e.message);
+    throw e;
+  }
+  await audit(user, "update", "Setting", null, `Updated dropdown list "${MANAGED_LISTS[key].title}"`, { ip });
+  return optionsPayload();
+});
+
+export const resetOptionList = api({ perm: "settings:write" }, async ({ params, user, ip }) => {
+  const key = String(params.list);
+  if (!isManagedList(key)) throw notFound("This list does not exist.");
+  await resetList(key, user.id);
+  await audit(user, "update", "Setting", null, `Reset dropdown list "${MANAGED_LISTS[key].title}" to defaults`, { ip });
+  return optionsPayload();
+});
+
+/* --------------------------- Roles & permissions ------------------------- */
+async function rolesWithCounts() {
+  const roles = await getRoles();
+  const counts = await User.aggregate([{ $group: { _id: "$role", n: { $sum: 1 } } }]);
+  return roles.map((r) => ({
+    ...r,
+    users: counts.find((c: any) => c._id === r.value)?.n ?? 0,
+    defaultPermissions: DEFAULT_ROLE_DEFS.find((d) => d.value === r.value)?.permissions ?? null,
+  }));
+}
+
+export const listRoles = api({ perm: "users:read" }, async () => rolesWithCounts());
+
+const rolesBody = z.object({
+  roles: z
+    .array(
+      z.object({
+        value: z.string().trim().regex(OPTION_VALUE_RE, "Role code is not valid"),
+        label: z.string().trim().min(1, "Every role needs a name").max(60),
+        color: z.string().max(20).optional(),
+        permissions: z.array(z.string().max(60)).max(400),
+      })
+    )
+    .min(1)
+    .max(50),
+});
+
+const onlyAdmin = (user: any) => {
+  if (!can(user.permissions, "*")) throw forbidden("Only an admin can change what each role can do.");
+};
+
+function roleSaveError(e: unknown): never {
+  if (e instanceof Error && e.message.startsWith("ROLE_IN_USE:")) {
+    throw badRequest(`Some people still have the role ${e.message.slice(12)}. Move them to another role first, then delete it.`);
+  }
+  throw e;
+}
+
+export const putRoles = api({ perm: "users:write" }, async ({ req, user, ip }) => {
+  onlyAdmin(user);
+  const { roles } = await parseBody(req, rolesBody);
+  const seen = new Set<string>();
+  for (const r of roles) {
+    if (seen.has(r.value)) throw badRequest(`Two roles have the same code "${r.value}".`);
+    seen.add(r.value);
+  }
+  const labels = new Set<string>();
+  for (const r of roles) {
+    if (labels.has(r.label.toLowerCase())) throw badRequest(`Two roles are named "${r.label}".`);
+    labels.add(r.label.toLowerCase());
+  }
+  await saveRoles(roles, user.id).catch(roleSaveError);
+  await audit(user, "update", "Setting", null, "Updated roles & permissions", { ip });
+  return rolesWithCounts();
+});
+
+export const resetRolesToDefault = api({ perm: "users:write" }, async ({ user, ip }) => {
+  onlyAdmin(user);
+  await resetRoles(user.id).catch(roleSaveError);
+  await audit(user, "update", "Setting", null, "Reset roles & permissions to defaults", { ip });
+  return rolesWithCounts();
 });
 
 /* ------------------------------ Global search ---------------------------- */

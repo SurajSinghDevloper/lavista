@@ -1,13 +1,14 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { z } from "zod";
-import { DEPARTMENTS, ROLES, values } from "@/lib/constants";
 import { RESOURCES } from "@/lib/permissions";
 import { hashPassword, passwordProblem, revokeAllSessions } from "../auth";
 import { crud } from "../crud";
-import { api, assertId, badRequest, notFound, parseBody } from "../http";
+import { can } from "@/lib/permissions";
+import { api, assertId, badRequest, forbidden, notFound, parseBody } from "../http";
 import { User } from "../models";
 import { audit } from "../services/core";
-import { zBool, zDate, zEmail, zOptEnum, zOptPhone, zText } from "../validators";
+import { roleExists } from "../services/roles";
+import { zBool, zDate, zEmail, zOption, zOptOption, zOptPhone, zText } from "../validators";
 
 const perm = z.string().refine(
   (p) => /^[a-z_]+:(read|write|delete|approve|all)$/.test(p) && RESOURCES.includes(p.split(":")[0] as never),
@@ -17,9 +18,9 @@ const perm = z.string().refine(
 const base = {
   name: z.string().trim().min(2).max(100),
   phone: zOptPhone,
-  role: z.enum(values(ROLES)),
+  role: zOption,
   designation: zText(100),
-  department: zOptEnum(values(DEPARTMENTS)),
+  department: zOptOption,
   joiningDate: zDate,
   address: zText(300),
   emergencyContact: zText(100),
@@ -34,6 +35,14 @@ const createSchema = z.object({
   password: z.string().min(8).max(200),
 });
 const updateSchema = z.object({ ...base, email: zEmail }).partial();
+
+/** Admin powers can only be handed out by an admin (a manager with "users:write" can't promote anyone). */
+async function checkRoleChange(data: any, existing: any, ctx: any) {
+  if (data.role && !(await roleExists(data.role))) throw badRequest("Please choose a valid role.");
+  const isAdmin = can(ctx.user.permissions, "*");
+  if (!isAdmin && (data.role === "admin" || existing?.role === "admin")) throw forbidden("Only an admin can give or change admin access.");
+  if (!isAdmin && data.extraPermissions !== undefined) throw forbidden("Only an admin can give extra permissions.");
+}
 
 async function ensureAnotherAdmin(excludeId: string) {
   const admins = await User.countDocuments({ role: "admin", isActive: true, _id: { $ne: excludeId } });
@@ -51,7 +60,8 @@ export const users = crud({
   sortable: ["name", "createdAt", "role", "lastLoginAt"],
   defaultSort: "name",
   populate: { path: "avatar", select: "storageKey mimeType" },
-  beforeCreate: async (data) => {
+  beforeCreate: async (data, ctx) => {
+    await checkRoleChange(data, null, ctx);
     const problem = passwordProblem(data.password);
     if (problem) throw badRequest(problem);
     data.passwordHash = await hashPassword(data.password);
@@ -60,6 +70,7 @@ export const users = crud({
     return data;
   },
   beforeUpdate: async (data, existing, ctx) => {
+    await checkRoleChange(data, existing, ctx);
     const id = String(existing._id);
     const demoting = data.role && data.role !== "admin" && existing.role === "admin";
     const deactivating = data.isActive === false && existing.isActive;
@@ -82,6 +93,7 @@ export const deactivateUser = api({ perm: "users:delete" }, async ({ params, use
   if (id === user.id) throw badRequest("You cannot deactivate yourself");
   const u = await User.findById(id);
   if (!u) throw notFound("User not found");
+  if (u.role === "admin" && !can(user.permissions, "*")) throw forbidden("Only an admin can deactivate another admin.");
   if (u.role === "admin") await ensureAnotherAdmin(id);
   u.isActive = false;
   u.tokenVersion = (u.tokenVersion ?? 0) + 1;
@@ -98,6 +110,7 @@ export const resetPassword = api({ perm: "users:write" }, async ({ req, params, 
   if (problem) throw badRequest(problem);
   const u = await User.findById(id);
   if (!u) throw notFound("User not found");
+  if (u.role === "admin" && !can(user.permissions, "*")) throw forbidden("Only an admin can reset an admin's password.");
   u.passwordHash = await hashPassword(password);
   u.mustChangePassword = true;
   u.failedLogins = 0;

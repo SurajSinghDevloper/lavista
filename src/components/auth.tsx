@@ -6,6 +6,7 @@ import { SWRConfig } from "swr";
 import { useOne } from "@/hooks/use-api";
 import { api, ApiClientError } from "@/lib/api-client";
 import type { Role } from "@/lib/constants";
+import { applyManagedOptions, type OptionsPayload } from "@/lib/options";
 import { can as canCheck, canAny as canAnyCheck, type Permission } from "@/lib/permissions";
 import { ConfirmProvider, Loading as PageLoading, ToastProvider, useToast, userMessage } from "./ui";
 
@@ -90,6 +91,15 @@ export function useAuth() {
   const c = useContext(Ctx);
   if (!c) throw new Error("useAuth must be used inside <Providers>");
   return c;
+}
+
+/** Loads the client's own dropdown lists (Settings → Dropdown options) before any screen draws a form. */
+export function OptionsReady({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  const { data, error } = useOne<OptionsPayload>(user ? "/settings/options" : null, { revalidateOnFocus: false, dedupingInterval: 60_000 });
+  useMemo(() => data && applyManagedOptions(data), [data]);
+  if (user && !data && !error) return <PageLoading />;
+  return children;
 }
 
 /** Page-level guard: shows a clear message instead of empty screens when a role lacks access. */

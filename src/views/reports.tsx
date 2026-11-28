@@ -36,6 +36,15 @@ function csv(rows: any[], cols: { key: string; label: string; get?: (r: any) => 
   URL.revokeObjectURL(url);
 }
 
+/** "Cash flow · Dec 2025 – Nov 2026 (12 months)" – follows the period picked above. */
+function cashflowTitle(months: { month: string }[]) {
+  if (!months?.length) return "Cash flow";
+  const label = (m: string) => new Date(`${m}-01T00:00:00`).toLocaleString("en-IN", { month: "short", year: "numeric" });
+  const first = label(months[0].month);
+  const last = label(months[months.length - 1].month);
+  return `Cash flow · ${first === last ? first : `${first} – ${last}`} (${months.length} month${months.length === 1 ? "" : "s"})`;
+}
+
 export function ReportsPage() {
   const router = useRouter();
   const [from, setFrom] = useState(() => toInputDate(new Date(new Date().getFullYear(), new Date().getMonth() - 11, 1)));
@@ -123,7 +132,7 @@ export function ReportsPage() {
           </Card>
 
           <div className="grid gap-5 lg:grid-cols-3">
-            <Card title="Cash flow (12 months)" className="lg:col-span-2">
+            <Card title={cashflowTitle(data.finance.cashflow)} className="lg:col-span-2">
               <div className="flex h-48 items-end gap-2">
                 {data.finance.cashflow.map((m: any) => {
                   const max = Math.max(1, ...data.finance.cashflow.flatMap((x: any) => [x.received, x.spent]));

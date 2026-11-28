@@ -37,7 +37,7 @@ export const ALLOWED_TYPES: Record<string, string> = {
 };
 
 /** Types safe to show inline in the browser. */
-export const INLINE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "application/pdf", "video/mp4"]);
+export const INLINE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "application/pdf", "video/mp4", "video/quicktime"]);
 
 const root = () => path.resolve(/*turbopackIgnore: true*/ process.cwd(), env.uploadDir);
 
